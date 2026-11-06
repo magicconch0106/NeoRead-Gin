@@ -1,5 +1,6 @@
 import { reportDiagnostic } from "../diagnostics";
 import { PDFResizeObserver } from "./pdf-resize";
+import { pdfBodyTextSize } from "./pdf-text-size";
 import { readPDFOutline } from "./pdf-outline";
 import { PDFFigureLinks } from "./pdf-figure-links";
 import { selectionContext } from "./selection-context";
@@ -64,6 +65,8 @@ export class PDFReaderAdapter implements ReaderAdapter {
   private wheelAppliedScale?: number;
   private disposed = false;
   private renderErrorReported = false;
+  private bodyTextSize?: number;
+  private publishedTextSize?: number;
   private navigationRequest = 0;
   private blocks: PDFBlockOverlay;
   private blockData: PDFBlock[] = [];
@@ -138,6 +141,7 @@ export class PDFReaderAdapter implements ReaderAdapter {
     this.bus.on("scalechanging", () => {
       if (!this.disposed && !this.resizingViewport)
         this.viewport.scaleChanged();
+      this.publishBodyFontSize();
     });
     this.bus.on("pagesinit", () => {
       // PDFViewer resets lang during setup. Explicitly mark it unknown before
@@ -207,6 +211,7 @@ export class PDFReaderAdapter implements ReaderAdapter {
           this.resizingViewport = false;
         }
         if (!result) return;
+        this.publishBodyFontSize();
         this.clearSelection();
         this.wheelScale = undefined;
         if (
@@ -250,6 +255,39 @@ export class PDFReaderAdapter implements ReaderAdapter {
     this.viewer.currentScaleValue = "page-width";
     if (doc.progress?.type === "pdf") await this.goTo(doc.progress);
     else this.events.location(this.location, 1 / this.pdf.numPages);
+    void this.measureBodyFontSize();
+  }
+  private async measureBodyFontSize() {
+    const pdf = this.pdf;
+    if (!pdf || !this.events.bodyFontSize) return;
+    // Sample once per document, so headings, footnotes and page changes cannot
+    // make the translation jump between font sizes during normal scrolling.
+    const samples = await Promise.allSettled(
+      Array.from({ length: Math.min(3, pdf.numPages) }, async (_, index) => {
+        const page = await pdf.getPage(index + 1);
+        const content = await page.getTextContent();
+        return { items: content.items, userUnit: page.userUnit ?? 1 };
+      }),
+    );
+    if (this.disposed || this.pdf !== pdf) return;
+    this.bodyTextSize = pdfBodyTextSize(
+      samples.flatMap((sample) =>
+        sample.status === "fulfilled" ? [sample.value] : [],
+      ),
+    );
+    this.publishBodyFontSize();
+  }
+  private publishBodyFontSize() {
+    if (this.disposed || !this.bodyTextSize) return;
+    const pixels = this.bodyTextSize * this.viewer.currentScale;
+    if (
+      !Number.isFinite(pixels) ||
+      pixels <= 0 ||
+      pixels === this.publishedTextSize
+    )
+      return;
+    this.publishedTextSize = pixels;
+    this.events.bodyFontSize?.(pixels);
   }
   async getTOC(): Promise<TOCItem[]> {
     return this.pdf ? readPDFOutline(this.pdf) : [];
@@ -438,6 +476,7 @@ export class PDFReaderAdapter implements ReaderAdapter {
       this.events.zoom?.(applied);
     }
     this.viewport.reset();
+    this.publishBodyFontSize();
   }
   private onWheel = (event: WheelEvent) => {
     this.viewport.cancelAnimation();
@@ -566,6 +605,7 @@ export class PDFReaderAdapter implements ReaderAdapter {
         : String(theme.zoom);
       this.viewport.reset();
     }
+    this.publishBodyFontSize();
     this.container.dataset.theme = theme.mode;
     this.container.dataset.darkContrast = theme.pdfDarkContrast ?? "soft";
     if (this.pdf && colorsChanged) {

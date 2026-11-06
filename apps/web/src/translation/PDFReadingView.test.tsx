@@ -1220,3 +1220,19 @@ it("updates linked paragraph hover without rerendering translated content", asyn
   }
   expect(fixture.markdownRenders - renders).toBe(0);
 });
+
+it("matches source body size by default and retains only explicit translation offsets", async () => {
+  await click("原文译文");
+  const size = () =>
+    host.querySelector<HTMLElement>(".translation-document")!.style.fontSize;
+  await act(async () => fixture.events!.bodyFontSize?.(24));
+  expect(size()).toBe("24px");
+  await act(async () => fixture.events!.bodyFontSize?.(30));
+  expect(size()).toBe("30px");
+  await renderView({ ...defaultTheme, translationFontSize: 1.2 });
+  expect(size()).toBe("36px");
+  await renderView({ ...defaultTheme, translationFontSize: 1 });
+  expect(size()).toBe("30px");
+  await act(async () => fixture.events!.bodyFontSize?.(NaN));
+  expect(size()).toBe("30px");
+});

@@ -94,6 +94,12 @@ export function PDFReadingView({
   const { translations, error } = useTranslations(doc.id);
   const [popup, setPopup] = useState<{ block: PDFBlock; rect: DOMRect }>();
   const [engine, setEngine] = useState<ReaderAdapter>();
+  const [bodySize, setBodySize] = useState<{
+    documentId: string;
+    pixels: number;
+  }>();
+  const sourceBodySize =
+    bodySize?.documentId === doc.id ? bodySize.pixels : undefined;
   const hoveredBlock = useRef<string | undefined>(undefined);
   const translationNodes = useRef(new Map<string, HTMLElement>());
   const [focusedBlock, setFocusedBlock] = useState<string>();
@@ -832,6 +838,15 @@ export function PDFReadingView({
               onReady={ready}
               events={{
                 ...events,
+                bodyFontSize: (pixels) => {
+                  if (!Number.isFinite(pixels) || pixels <= 0) return;
+                  setBodySize((previous) =>
+                    previous?.documentId === doc.id &&
+                    previous.pixels === pixels
+                      ? previous
+                      : { documentId: doc.id, pixels },
+                  );
+                },
                 selection: sourceSelection,
                 blockFocus: (block) => {
                   void focusBlock(block, "source");
@@ -931,7 +946,9 @@ export function PDFReadingView({
               onKeyDownCapture={() => input("translation")}
               onKeyUp={translatedSelection}
               style={{
-                fontSize: `${theme.translationFontSize ?? 1}rem`,
+                fontSize: sourceBodySize
+                  ? `${sourceBodySize * (theme.translationFontSize ?? 1)}px`
+                  : `${theme.translationFontSize ?? 1}rem`,
                 fontFamily: translationFont(theme.translationFontFamily),
                 fontWeight:
                   (theme.translationFontWeight ??

@@ -58,6 +58,9 @@ export function ReaderView({
       if (disposed) return;
       const Engine = PDFReaderAdapter || EPUBReaderAdapter!;
       engine = new Engine(container, {
+        bodyFontSize: (pixels) => {
+          if (!disposed) latest.current.events.bodyFontSize?.(pixels);
+        },
         epubInteraction: () => {
           if (!disposed && latest.current.active)
             latest.current.events.epubInteraction?.();

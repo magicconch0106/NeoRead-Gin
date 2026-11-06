@@ -489,6 +489,8 @@ export interface ReaderEvents {
   /** The copy, ask-AI or preview button on a hovered EPUB paragraph. */
   epubBlockAction?: (block: EPUBReadingBlock, action: PDFBlockAction) => void;
   blockHover?: (block: PDFBlock | null) => void;
+  /** PDF body font size at the current zoom, in CSS pixels. */
+  bodyFontSize?: (pixels: number) => void;
   annotation?: (target: ReaderAnnotationTarget | null) => void;
   /** Hover preview only; never select or copy annotation text. */
   annotationHover?: (target: ReaderAnnotationTarget | null) => void;

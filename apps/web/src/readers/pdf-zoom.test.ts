@@ -4,6 +4,7 @@ import { defaultTheme, type Document } from "@neoread/core";
 
 const state = vi.hoisted(() => ({
   scale: 1,
+  textItems: [] as { str: string; transform: number[] }[],
   scaleValue: "page-width",
   update: vi.fn(),
   pageNode: undefined as HTMLDivElement | undefined,
@@ -16,6 +17,8 @@ vi.mock("pdfjs-dist", () => ({
     promise: Promise.resolve({
       numPages: 10,
       getPage: async () => ({
+        userUnit: 1,
+        getTextContent: async () => ({ items: state.textItems }),
         getViewport: () => ({ width: 750, height: 900 }),
       }),
     }),
@@ -94,6 +97,7 @@ function wheel(extra: WheelEventInit = {}, target: EventTarget = host) {
 beforeEach(async () => {
   vi.clearAllMocks();
   state.scale = 1;
+  state.textItems = [];
   state.pageNode = undefined;
   vi.stubGlobal(
     "ResizeObserver",
@@ -340,4 +344,26 @@ it("keeps the original zoom basis when a sidebar toggle reverses mid-animation",
   } finally {
     vi.useRealTimers();
   }
+});
+
+it("publishes cached body font metrics on explicit zoom without rescanning pages", async () => {
+  await adapter.destroy();
+  state.textItems = [
+    { str: "Dominant body paragraph", transform: [10, 0, 0, 10, 0, 0] },
+  ];
+  const bodyFontSize = vi.fn();
+  adapter = new PDFReaderAdapter(host, {
+    location: vi.fn(),
+    selection: vi.fn(),
+    bodyFontSize,
+  });
+  await adapter.open({ id: "metrics", type: "pdf" } as Document);
+  await vi.waitFor(() => expect(bodyFontSize).toHaveBeenCalled());
+  expect(bodyFontSize.mock.lastCall?.[0]).toBeCloseTo((10 * 96) / 72);
+  const calls = bodyFontSize.mock.calls.length;
+  await adapter.setTheme({ ...defaultTheme, zoom: 2 });
+  expect(bodyFontSize.mock.lastCall?.[0]).toBeCloseTo((20 * 96) / 72);
+  expect(bodyFontSize).toHaveBeenCalledTimes(calls + 1);
+  await adapter.setTheme({ ...defaultTheme, zoom: 2 });
+  expect(bodyFontSize).toHaveBeenCalledTimes(calls + 1);
 });
