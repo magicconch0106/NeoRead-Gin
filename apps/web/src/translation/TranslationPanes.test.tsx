@@ -245,6 +245,43 @@ it("supports keyboard resizing and keeps clicks on the swap button out of the dr
   expect(sourceSize()).toBe(before);
 });
 
+it("does not inject a document-wide cursor rule when hovering or dragging the divider", async () => {
+  const previous = Object.getOwnPropertyDescriptor(
+    document,
+    "adoptedStyleSheets",
+  );
+  Object.defineProperty(document, "adoptedStyleSheets", {
+    configurable: true,
+    value: [],
+  });
+  try {
+    await click("parallel");
+    const divider = host.querySelector<HTMLElement>('[role="separator"]')!;
+    const x = divider.getBoundingClientRect().left;
+    await act(async () => {
+      divider.dispatchEvent(
+        new MouseEvent("pointermove", {
+          bubbles: true,
+          clientX: x,
+          clientY: 200,
+        }),
+      );
+    });
+    const rules = () =>
+      document.adoptedStyleSheets.flatMap((sheet) =>
+        [...sheet.cssRules].map((rule) => rule.cssText),
+      );
+    expect(rules().some((rule) => rule.includes("cursor:"))).toBe(false);
+    await drag(100);
+    expect(sourceSize()).toBeCloseTo(60);
+    expect(rules().some((rule) => rule.includes("cursor:"))).toBe(false);
+  } finally {
+    if (previous)
+      Object.defineProperty(document, "adoptedStyleSheets", previous);
+    else Reflect.deleteProperty(document, "adoptedStyleSheets");
+  }
+});
+
 it("restores the last source width and order after leaving a document, without saving single-pane widths", async () => {
   await click("parallel");
   await drag(150);
@@ -265,7 +302,8 @@ it("restores the last source width and order after leaving a document, without s
   expect(sourceSize()).toBeCloseTo(60);
   expect(
     visualChildren(host.querySelector("[data-group]")!)
-      .at(-1)!.querySelector("[data-source]"),
+      .at(-1)!
+      .querySelector("[data-source]"),
   ).not.toBeNull();
 });
 
@@ -305,7 +343,8 @@ it.each([false, true])(
     if (stacked) await click("上下排列");
     const group = host.querySelector("[data-group]")!;
     const source = host.querySelector<HTMLElement>("[data-source]")!;
-    const translation = group.lastElementChild!.firstElementChild as HTMLElement;
+    const translation = group.lastElementChild!
+      .firstElementChild as HTMLElement;
     source.scrollTop = 7245;
     source.scrollLeft = 35;
     translation.scrollTop = 1234;
@@ -313,7 +352,9 @@ it.each([false, true])(
     // jsdom does not reset scroll on DOM reinsertion as browsers do. Assert
     // that swapping never removes/reinserts the panels containing either view.
     const mutations: MutationRecord[] = [];
-    const observer = new MutationObserver((records) => mutations.push(...records));
+    const observer = new MutationObserver((records) =>
+      mutations.push(...records),
+    );
     observer.observe(group, { childList: true });
     try {
       for (const swapped of [true, false, true]) {
@@ -321,7 +362,9 @@ it.each([false, true])(
         expect([...mutations, ...observer.takeRecords()]).toEqual([]);
         expect([...group.children]).toEqual(children);
         expect(
-          visualChildren(group).at(swapped ? -1 : 0)!.contains(source),
+          visualChildren(group)
+            .at(swapped ? -1 : 0)!
+            .contains(source),
         ).toBe(true);
         expect(source.scrollTop).toBe(7245);
         expect(source.scrollLeft).toBe(35);

@@ -9,6 +9,7 @@ function ResizablePanelGroup({
 }: ResizablePrimitive.GroupProps) {
   return (
     <ResizablePrimitive.Group
+      disableCursor
       data-slot="resizable-panel-group"
       className={cn(
         "flex h-full w-full aria-[orientation=vertical]:flex-col",

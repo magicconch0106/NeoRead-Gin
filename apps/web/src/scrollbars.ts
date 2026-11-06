@@ -12,7 +12,10 @@ export function installScrollbars(doc: Document) {
     if (!target || !("nodeType" in target) || target.nodeType !== 1) return;
     const element = target as Element;
     clearTimeout(timers.get(element));
-    element.setAttribute("data-neoread-scrolling", "");
+    // Rewriting this inherited scrollbar style on every scroll event forces
+    // Chromium to recalculate styles for every PDF text span/translated formula.
+    if (!timers.has(element))
+      element.setAttribute("data-neoread-scrolling", "");
     timers.set(
       element,
       setTimeout(() => {
