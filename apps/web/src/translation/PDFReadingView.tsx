@@ -61,6 +61,7 @@ import { chapterRange, headingPages } from "./chapters";
 import { searchPDFBlocks } from "./pdf-search";
 
 type Mode = "source" | "parallel" | "translation";
+const noSearchResults: SearchResult[] = [];
 // Progress and hover updates must not re-render every sentence and formula.
 const PDFTranslationText = memo(function PDFTranslationText({
   requestTranslation,
@@ -84,7 +85,7 @@ export function PDFReadingView({
   toolbarHost,
   autoCenterHost,
   pageNavigation,
-  searchResults = [],
+  searchResults = noSearchResults,
   searchQuery = "",
   onReady,
   events,
@@ -823,6 +824,94 @@ export function PDFReadingView({
       </Tabs>
     </div>
   );
+  const sectionActions = useRef({ hover, focusTranslation });
+  sectionActions.current = { hover, focusTranslation };
+  // Reading progress changes do not rebuild the entire translated document.
+  const translationContent = useMemo(
+    () =>
+      visibleBlocks.map((block) => {
+        const translated = byId.get(block.id),
+          noteIndexes = annotations.flatMap((a) => {
+            const mark =
+              a.location.type === "pdf" ? a.location.translation : undefined;
+            return mark
+              ? (mark.ranges ?? [mark])
+                  .filter(
+                    (r) =>
+                      r.blockId === block.id &&
+                      r.sourceHash === translated?.sourceHash,
+                  )
+                  .flatMap((r) => r.sentenceIndexes)
+              : [];
+          });
+        return (
+          <section
+            key={block.id}
+            data-translation-block={block.id}
+            data-block-kind={block.image ? "image" : "text"}
+            data-label={block.label}
+            data-focused={focusedBlock === block.id || undefined}
+            data-search-hit={searchBlockIds.includes(block.id) || undefined}
+            aria-current={focusedBlock === block.id || undefined}
+            tabIndex={0}
+            ref={(node) => {
+              if (node) translationNodes.current.set(block.id, node);
+              else translationNodes.current.delete(block.id);
+            }}
+            onKeyDown={(event) => {
+              if (
+                event.target === event.currentTarget &&
+                (event.key === "Enter" || event.key === " ")
+              ) {
+                event.preventDefault();
+                sectionActions.current.focusTranslation(block);
+              }
+            }}
+            onPointerEnter={(event) => {
+              if (!event.buttons && !selecting.current)
+                sectionActions.current.hover("translation", block.id);
+            }}
+            onPointerMove={(event) => {
+              if (!event.buttons && !selecting.current)
+                sectionActions.current.hover("translation", block.id);
+            }}
+            onPointerLeave={() => sectionActions.current.hover("translation")}
+            className={noteIndexes.length ? "translation-annotated" : ""}
+          >
+            <PDFTranslationText
+              block={block}
+              onCitation={followCitation}
+              formulaNumber={equationNumbers.byFormula.get(block.id)}
+              translation={translated}
+              documentId={doc.id}
+              renderImage={blockImages?.url}
+              requestTranslation={translate}
+              paused={processing?.enabled === false}
+            />
+            {noteIndexes.length > 0 && (
+              <span
+                className="translation-note-indicator"
+                title="此段有已保存的标注"
+                aria-label="此段有已保存的标注"
+              />
+            )}
+          </section>
+        );
+      }),
+    [
+      visibleBlocks,
+      byId,
+      annotations,
+      focusedBlock,
+      searchBlockIds,
+      equationNumbers,
+      followCitation,
+      doc.id,
+      blockImages,
+      translate,
+      processing?.enabled,
+    ],
+  );
   return (
     <div
       className="pdf-reading"
@@ -992,81 +1081,7 @@ export function PDFReadingView({
                     : "正文仍在解析中，完成的段落会在这里显示。"}
                 </p>
               )}
-              {visibleBlocks.map((block) => {
-                const translated = byId.get(block.id),
-                  noteIndexes = annotations.flatMap((a) => {
-                    const mark =
-                      a.location.type === "pdf"
-                        ? a.location.translation
-                        : undefined;
-                    return mark
-                      ? (mark.ranges ?? [mark])
-                          .filter(
-                            (r) =>
-                              r.blockId === block.id &&
-                              r.sourceHash === translated?.sourceHash,
-                          )
-                          .flatMap((r) => r.sentenceIndexes)
-                      : [];
-                  });
-                return (
-                  <section
-                    key={block.id}
-                    data-translation-block={block.id}
-                    data-block-kind={block.image ? "image" : "text"}
-                    data-label={block.label}
-                    data-focused={focusedBlock === block.id || undefined}
-                    data-search-hit={
-                      searchBlockIds.includes(block.id) || undefined
-                    }
-                    aria-current={focusedBlock === block.id || undefined}
-                    tabIndex={0}
-                    ref={(node) => {
-                      if (node) translationNodes.current.set(block.id, node);
-                      else translationNodes.current.delete(block.id);
-                    }}
-                    onKeyDown={(event) => {
-                      if (
-                        event.target === event.currentTarget &&
-                        (event.key === "Enter" || event.key === " ")
-                      ) {
-                        event.preventDefault();
-                        focusTranslation(block);
-                      }
-                    }}
-                    onPointerEnter={(event) => {
-                      if (!event.buttons && !selecting.current)
-                        hover("translation", block.id);
-                    }}
-                    onPointerMove={(event) => {
-                      if (!event.buttons && !selecting.current)
-                        hover("translation", block.id);
-                    }}
-                    onPointerLeave={() => hover("translation")}
-                    className={
-                      noteIndexes.length ? "translation-annotated" : ""
-                    }
-                  >
-                    <PDFTranslationText
-                      block={block}
-                      onCitation={followCitation}
-                      formulaNumber={equationNumbers.byFormula.get(block.id)}
-                      translation={translated}
-                      documentId={doc.id}
-                      renderImage={blockImages?.url}
-                      requestTranslation={translate}
-                      paused={processing?.enabled === false}
-                    />
-                    {noteIndexes.length > 0 && (
-                      <span
-                        className="translation-note-indicator"
-                        title="此段有已保存的标注"
-                        aria-label="此段有已保存的标注"
-                      />
-                    )}
-                  </section>
-                );
-              })}
+              {translationContent}
             </div>
           )
         }

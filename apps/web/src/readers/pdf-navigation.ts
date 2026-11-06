@@ -101,26 +101,44 @@ export class PDFReadingNavigation {
     let best: PDFBlock | undefined,
       distance = Infinity,
       fraction = 0;
-    const pages = new Map<number, DOMRect>();
-    for (const b of this.readableBlocks()) {
-      let r = pages.get(b.page);
-      if (!r) {
-        const node = this.pageNode(b.page);
-        if (!node) continue;
-        r = node.getBoundingClientRect();
-        pages.set(b.page, r);
-      }
-      if (r.bottom < viewport.top || r.top > viewport.bottom) continue;
-      const bx = r.left + b.bounds.x * r.width,
-        by = r.top + b.bounds.y * r.height,
-        bw = b.bounds.width * r.width,
-        bh = b.bounds.height * r.height;
-      const d =
-        Math.max(bx - x, x - bx - bw, 0) * 2 + Math.max(by - y, y - by - bh, 0);
-      if (d < distance) {
-        distance = d;
-        best = b;
-        fraction = Math.max(0, Math.min(1, (y - by) / (bh || 1)));
+    this.readableBlocks();
+    // PDF pages are vertically ordered. Locate the first visible page without
+    // measuring every page of a long paper on each scroll frame.
+    const pages = this.pageBlocks;
+    const geometry = new Map<number, DOMRect | undefined>();
+    const rect = (index: number) => {
+      if (!geometry.has(index))
+        geometry.set(
+          index,
+          this.pageNode(pages[index][0])?.getBoundingClientRect(),
+        );
+      return geometry.get(index);
+    };
+    let low = 0,
+      high = pages.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      const r = rect(middle);
+      if (r && r.bottom < viewport.top) low = middle + 1;
+      else high = middle;
+    }
+    for (let index = low; index < pages.length; index++) {
+      const r = rect(index);
+      if (!r) continue;
+      if (r.top > viewport.bottom) break;
+      for (const b of pages[index][1]) {
+        const bx = r.left + b.bounds.x * r.width,
+          by = r.top + b.bounds.y * r.height,
+          bw = b.bounds.width * r.width,
+          bh = b.bounds.height * r.height;
+        const d =
+          Math.max(bx - x, x - bx - bw, 0) * 2 +
+          Math.max(by - y, y - by - bh, 0);
+        if (d < distance) {
+          distance = d;
+          best = b;
+          fraction = Math.max(0, Math.min(1, (y - by) / (bh || 1)));
+        }
       }
     }
     return best ? { blockId: best.id, fraction } : undefined;
@@ -139,6 +157,7 @@ export class PDFReadingNavigation {
   }
   private cachedBlocks?: PDFBlock[];
   private orderedBlocks: PDFBlock[] = [];
+  private pageBlocks: [number, PDFBlock[]][] = [];
   private readableBlocks() {
     const blocks = this.blocks();
     if (blocks !== this.cachedBlocks) {
@@ -146,6 +165,13 @@ export class PDFReadingNavigation {
       this.orderedBlocks = blocks
         .filter((b) => !isPDFPageDecoration(b) && (b.image || b.text.trim()))
         .sort((a, b) => a.page - b.page);
+      const pages = new Map<number, PDFBlock[]>();
+      for (const block of this.orderedBlocks) {
+        const page = pages.get(block.page) ?? [];
+        page.push(block);
+        pages.set(block.page, page);
+      }
+      this.pageBlocks = [...pages];
     }
     return this.orderedBlocks;
   }

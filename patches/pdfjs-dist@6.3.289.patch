@@ -1,5 +1,5 @@
 diff --git a/build/pdf.mjs b/build/pdf.mjs
-index c55a629aa4482ce73d02e19d4e5eddeba8976e97..06fe7cbb30749e66b6409ac7cccbdc0a2a128dfb 100644
+index c55a629aa4482ce73d02e19d4e5eddeba8976e97..7639ec1d03d9d97f404aa68a9e5de1dafef17321 100644
 --- a/build/pdf.mjs
 +++ b/build/pdf.mjs
 @@ -10905,6 +10905,30 @@ const LINE_JOIN_STYLES = ["miter", "round", "bevel"];
@@ -118,7 +118,7 @@ index c55a629aa4482ce73d02e19d4e5eddeba8976e97..06fe7cbb30749e66b6409ac7cccbdc0a
        return;
      }
 diff --git a/legacy/build/pdf.mjs b/legacy/build/pdf.mjs
-index 993f35056cbb76d09d83c25dccd96fe1916ee372..d900eb33608cb069467da5a3b549cef8693f5351 100644
+index 993f35056cbb76d09d83c25dccd96fe1916ee372..88b89d0a1b33458a1d22326d976e9aafe63820d4 100644
 --- a/legacy/build/pdf.mjs
 +++ b/legacy/build/pdf.mjs
 @@ -17364,6 +17364,30 @@ const LINE_JOIN_STYLES = ["miter", "round", "bevel"];
@@ -237,7 +237,7 @@ index 993f35056cbb76d09d83c25dccd96fe1916ee372..d900eb33608cb069467da5a3b549cef8
        return;
      }
 diff --git a/web/pdf_viewer.mjs b/web/pdf_viewer.mjs
-index 29b3492cd9cb0869a906785739c34fc364ec1c17..4915556821bf4fc13507e7488bb18ea1c2c1857d 100644
+index 29b3492cd9cb0869a906785739c34fc364ec1c17..de09b3fa317caec604c7a699d080c505a32ff1be 100644
 --- a/web/pdf_viewer.mjs
 +++ b/web/pdf_viewer.mjs
 @@ -5044,8 +5044,11 @@ class BasePDFPageView extends RenderableView {
@@ -322,14 +322,26 @@ index 29b3492cd9cb0869a906785739c34fc364ec1c17..4915556821bf4fc13507e7488bb18ea1
      }, renderTask => {
        this.#useThumbnailCanvas.regularAnnotations = !renderTask.separateAnnots;
        this.dispatchPageRendered(false, false);
-@@ -9173,7 +9196,9 @@ class PDFViewer {
+@@ -9173,7 +9196,12 @@ class PDFViewer {
        view,
        visibleArea
      } of visiblePages) {
 -      view.updateVisibleArea(visibleArea);
-+      // Do not invalidate/recreate detail tiles on every animated zoom frame.
-+      // forceRendering already postpones detail rendering until this timer clears.
-+      if (this.#scaleTimeoutId === null) view.updateVisibleArea(visibleArea);
++      // Keep the existing page/detail canvas while a zoom or scroll is moving.
++      // The settled timer updates the crop once; repeated tile replacement also
++      // invalidates the entire page's text styles via its loading class.
++      if (this.#scaleTimeoutId === null && this.#scrollTimeoutId === null) {
++        view.updateVisibleArea(visibleArea);
++      }
      }
      for (const view of this.#buffer) {
        if (!visible.ids.has(view.id)) {
+@@ -9306,7 +9334,7 @@ class PDFViewer {
+     const visiblePages = currentlyVisiblePages || this._getVisiblePages();
+     const scrollAhead = this.#getScrollAhead(visiblePages);
+     const preRenderExtra = this._spreadMode !== SpreadMode.NONE && this._scrollMode !== ScrollMode.HORIZONTAL;
+-    const ignoreDetailViews = this.#scaleTimeoutId !== null || this.#scrollTimeoutId !== null && visiblePages.views.some(page => page.detailView?.renderingCancelled);
++    const ignoreDetailViews = this.#scaleTimeoutId !== null || this.#scrollTimeoutId !== null;
+     const pageView = this.renderingQueue.getHighestPriority(visiblePages, this._pages, scrollAhead, preRenderExtra, ignoreDetailViews);
+     if (pageView) {
+       this.#ensurePdfPageLoaded(pageView).then(() => {

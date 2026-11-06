@@ -92,6 +92,10 @@
 }
 .pdf-reading .translation-document section {
   max-width: none;
+  /* Keep offscreen math out of style/layout/paint work. The browser retains
+     measured heights, DOM selections and text search across scrolling. */
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 12em;
 }
 .translation-document section {
   position: relative;

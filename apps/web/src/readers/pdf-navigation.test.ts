@@ -8,6 +8,40 @@ vi.mock("pdfjs-dist", () => ({
 }));
 import { PDFReadingNavigation } from "./pdf-navigation";
 
+it("locates anchors in long papers without measuring every offscreen page", () => {
+  const host = document.createElement("div");
+  host.getBoundingClientRect = () => new DOMRect(0, 0, 600, 600);
+  let reads = 0;
+  const nodes = Array.from({ length: 1024 }, (_, i) => {
+    const node = document.createElement("div");
+    node.getBoundingClientRect = () => {
+      reads++;
+      return new DOMRect(0, (i - 511) * 1000, 600, 1000);
+    };
+    return node;
+  });
+  const blocks: PDFBlock[] = nodes.map((_, i) => ({
+    id: `page-${i + 1}`,
+    page: i + 1,
+    label: "text",
+    text: "Body",
+    bounds: { x: 0, y: 0, width: 1, height: 1 },
+  }));
+  const nav = new PDFReadingNavigation(
+    host,
+    { getPageView: (i: number) => ({ div: nodes[i] }) } as unknown as PDFViewer,
+    vi.fn(),
+    () => blocks,
+    { location: vi.fn(), selection: vi.fn() },
+  );
+  try {
+    expect(nav.anchor()).toEqual({ blockId: "page-512", fraction: 0.3 });
+    expect(reads).toBeLessThan(15);
+  } finally {
+    nav.destroy();
+  }
+});
+
 it("uses selected glyph positions to distinguish repeated words and includes both paragraphs", async () => {
   const host = document.createElement("div"),
     page = document.createElement("div");
