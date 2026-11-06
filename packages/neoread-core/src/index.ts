@@ -518,6 +518,8 @@ export interface ReaderAdapter {
   clearSelection(): void;
   highlight(annotations: Annotation[]): Promise<void>;
   setTheme(theme: ReaderTheme): Promise<void>;
+  /** Fit PDF content to the pane without including the paper's empty margins. */
+  fitContent?(): Promise<void>;
   /** Layout choices that must apply before the first page is shown. */
   preferTheme?(theme: ReaderTheme): void;
   getContext(): Promise<string>;

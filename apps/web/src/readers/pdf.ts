@@ -39,7 +39,7 @@ import { selectSentence } from "./sentence-selection";
 import { installPDFExternalLinks } from "./pdf-external-links";
 import { resolvePDFCitation } from "./pdf-citations";
 import { pdfObjectColors } from "./pdf-dark-mode";
-import { defaultTheme } from "@neoread/core";
+import { defaultTheme, isPDFPageDecoration } from "@neoread/core";
 pdfjs.GlobalWorkerOptions.workerSrc = workerURL;
 
 export class PDFReaderAdapter implements ReaderAdapter {
@@ -477,6 +477,66 @@ export class PDFReaderAdapter implements ReaderAdapter {
     }
     this.viewport.reset();
     this.publishBodyFontSize();
+  }
+  async fitContent() {
+    if (this.disposed || !this.pdf || this.container.closest("[inert]")) return;
+    this.viewport.cancelAnimation();
+    const pageNumber = this.viewer.currentPageNumber;
+    const node = this.viewer.getPageView(pageNumber - 1)?.div;
+    const width = this.container.clientWidth;
+    if (!node || width <= 32 || !this.container.clientHeight) return;
+    const before = node.getBoundingClientRect();
+    if (!before.width || !before.height) return;
+    const view = this.container.getBoundingClientRect();
+    // Preserve the reading point; fitting must not jump back to the page top.
+    const anchorY =
+      (view.top + this.container.clientHeight / 2 - before.top) / before.height;
+    const content = this.blockData.filter(
+      (block) =>
+        block.page === pageNumber &&
+        !isPDFPageDecoration(block) &&
+        (block.image || block.text.trim()) &&
+        Number.isFinite(block.bounds.x) &&
+        Number.isFinite(block.bounds.width) &&
+        block.bounds.width > 0 &&
+        block.bounds.x < 1 &&
+        block.bounds.x + block.bounds.width > 0,
+    );
+    // Include figures and both columns. Unparsed pages safely fit the whole paper.
+    const left = content.length
+      ? Math.max(0, Math.min(...content.map((b) => b.bounds.x)))
+      : 0;
+    const right = content.length
+      ? Math.min(
+          1,
+          Math.max(...content.map((b) => b.bounds.x + b.bounds.width)),
+        )
+      : 1;
+    const scale =
+      Math.floor(
+        ((this.viewer.currentScale * (width - 32)) /
+          (before.width * (right - left))) *
+          100,
+      ) / 100;
+    this.zoomTo(scale);
+    const after = node.getBoundingClientRect();
+    this.container.scrollLeft = Math.max(
+      0,
+      this.container.scrollLeft +
+        after.left +
+        left * after.width -
+        view.left -
+        16,
+    );
+    this.container.scrollTop = Math.max(
+      0,
+      this.container.scrollTop +
+        after.top +
+        anchorY * after.height -
+        view.top -
+        this.container.clientHeight / 2,
+    );
+    this.viewport.reset();
   }
   private onWheel = (event: WheelEvent) => {
     this.viewport.cancelAnimation();

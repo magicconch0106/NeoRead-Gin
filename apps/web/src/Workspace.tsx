@@ -1150,9 +1150,14 @@ export function Workspace({
           {doc.type === "pdf" && (
             <IconButton
               label="适配页面与文字"
-              onClick={() =>
-                setTheme({ zoom: "width", translationFontSize: 1 })
-              }
+              onClick={() => {
+                setTheme({ translationFontSize: 1 });
+                if (adapter?.fitContent)
+                  void adapter
+                    .fitContent()
+                    .catch((e) => toast.error(e.message));
+                else setTheme({ zoom: "width" });
+              }}
             >
               <Scan />
             </IconButton>

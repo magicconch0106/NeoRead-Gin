@@ -367,3 +367,73 @@ it("publishes cached body font metrics on explicit zoom without rescanning pages
   await adapter.setTheme({ ...defaultTheme, zoom: 2 });
   expect(bodyFontSize).toHaveBeenCalledTimes(calls + 1);
 });
+
+function fitGeometry() {
+  Object.defineProperties(host, {
+    clientWidth: { value: 800, configurable: true },
+    clientHeight: { value: 600, configurable: true },
+  });
+  host.getBoundingClientRect = () => new DOMRect(30, 50, 800, 600);
+  const page = document.createElement("div");
+  page.className = "page";
+  host.append(page);
+  page.getBoundingClientRect = () =>
+    new DOMRect(
+      30 - host.scrollLeft,
+      50 - host.scrollTop,
+      1000 * state.scale,
+      1200 * state.scale,
+    );
+  state.pageNode = page;
+  return (x: number, width: number, extra = {}) => ({
+    id: `block-${x}`,
+    page: 1,
+    label: "text",
+    text: "Body paragraph",
+    bounds: { x, y: 0.2, width, height: 0.1 },
+    ...extra,
+  });
+}
+it("fits content instead of empty paper margins, preserving the vertical reading point", async () => {
+  const block = fitGeometry();
+  adapter.setBlocks([block(0.16, 0.66)]);
+  host.scrollLeft = 50;
+  host.scrollTop = 500;
+  const anchor = (host.scrollTop + 300) / (1200 * state.scale);
+  await adapter.fitContent();
+  expect(state.scale).toBeGreaterThan(1);
+  const rect = state.pageNode!.getBoundingClientRect();
+  expect(rect.left + 0.16 * rect.width - 30).toBeCloseTo(16);
+  expect(0.66 * rect.width).toBeGreaterThan(760);
+  expect(0.66 * rect.width).toBeLessThanOrEqual(768);
+  expect((host.scrollTop + 300) / (1200 * state.scale)).toBeCloseTo(anchor);
+  const scale = state.scale,
+    left = host.scrollLeft,
+    top = host.scrollTop;
+  await adapter.fitContent();
+  expect(state.scale).toBeCloseTo(scale, 2);
+  expect(host.scrollLeft).toBeCloseTo(left);
+  expect(host.scrollTop).toBeCloseTo(top);
+});
+it("includes both columns and figures without letting page furniture set the fit width", async () => {
+  const block = fitGeometry();
+  adapter.setBlocks([
+    block(0.2, 0.25),
+    block(0.55, 0.25),
+    block(0.1, 0.8, { image: "figure.png", text: "", label: "image" }),
+    block(0, 1, { label: "header" }),
+    block(0, 1, { page: 2 }),
+  ]);
+  await adapter.fitContent();
+  const rect = state.pageNode!.getBoundingClientRect();
+  expect(rect.left + 0.1 * rect.width - 30).toBeCloseTo(16);
+  expect(0.8 * rect.width).toBeLessThanOrEqual(768);
+  expect(state.scale).toBeCloseTo(0.96);
+});
+it("safely fits unparsed pages without inventing a content crop", async () => {
+  fitGeometry();
+  adapter.setBlocks([]);
+  await adapter.fitContent();
+  expect(state.scale).toBeCloseTo(0.76);
+  expect(host.scrollLeft).toBe(0);
+});
