@@ -15,6 +15,7 @@ import {
   type TranslationBlock,
 } from "@neoread/core";
 const fixture = vi.hoisted(() => ({
+  markdownRenders: 0,
   events: undefined as ReaderEvents | undefined,
   ready: undefined as ReaderAdapter | undefined,
   translations: [] as TranslationBlock[],
@@ -56,6 +57,7 @@ vi.mock("../chat/MessageMarkdown", () => ({
     content: string;
     citationBlockId?: string;
   }) => {
+    fixture.markdownRenders++;
     const navigate = useContext(ReadingLinkNavigation);
     return (
       <p>
@@ -360,6 +362,10 @@ it("navigates to the matching bibliography block and restores the translated vie
   )!;
   reference.getBoundingClientRect = () =>
     new DOMRect(40, 1200 - pane.scrollTop, 520, 200);
+  host.querySelector<HTMLElement>(
+    '[data-translation-block="p9-first"]',
+  )!.getBoundingClientRect = () =>
+    new DOMRect(40, 1000 - pane.scrollTop, 520, 100);
   pane.scrollTop = 400;
   await act(async () => {
     pane.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
@@ -605,12 +611,16 @@ it.each([false, true])(
     expect(adapter.followBlock).not.toHaveBeenCalled();
   },
 );
-it("smoothly centers clicked translation blocks and follows their original without scroll feedback", async () => {
+it("smoothly centers explicitly keyboard-targeted translation blocks and follows their original without scroll feedback", async () => {
   await click("原文译文");
   const { pane, block } = translationGeometry();
   vi.useFakeTimers();
   try {
-    await act(async () => block.click());
+    await act(async () =>
+      block.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      ),
+    );
     expect(pane.scrollTop).toBe(0);
     expect(block.hasAttribute("data-focused")).toBe(true);
     expect(adapter.focusBlock).toHaveBeenLastCalledWith("p1-b1", "parallel");
@@ -637,14 +647,22 @@ it("top-aligns tall translation blocks and cancels their motion when the user sc
   const { pane, block } = translationGeometry(800);
   vi.useFakeTimers();
   try {
-    await act(async () => block.click());
+    await act(async () =>
+      block.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      ),
+    );
     await act(async () => {
       await vi.advanceTimersByTimeAsync(400);
     });
     expect(pane.scrollTop).toBe(600);
     expect(adapter.followBlock).not.toHaveBeenCalled();
     pane.scrollTop = 0;
-    await act(async () => block.click());
+    await act(async () =>
+      block.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      ),
+    );
     await act(async () => {
       await vi.advanceTimersByTimeAsync(96);
     });
@@ -696,7 +714,7 @@ it("does not treat drags, native selections or interactive controls as block nav
   expect(pane.scrollTop).toBe(0);
 });
 
-it("replaces an unfinished click with an image focus and does not re-highlight on scroll", async () => {
+it("replaces unfinished keyboard navigation with an image focus and does not re-highlight on scroll", async () => {
   await renderView(defaultTheme, [
     {
       id: "p1-image",
@@ -716,12 +734,20 @@ it("replaces an unfinished click with an image focus and does not re-highlight o
     new DOMRect(40, 1000 - pane.scrollTop, 520, 200);
   vi.useFakeTimers();
   try {
-    await act(async () => block.click());
+    await act(async () =>
+      block.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      ),
+    );
     await act(async () => {
       await vi.advanceTimersByTimeAsync(96);
     });
     const before = pane.scrollTop;
-    await act(async () => image.querySelector("img")!.click());
+    await act(async () =>
+      image.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      ),
+    );
     expect(pane.scrollTop).toBe(before);
     expect(block.hasAttribute("data-focused")).toBe(false);
     expect(image.hasAttribute("data-focused")).toBe(true);
@@ -776,7 +802,7 @@ it("does not focus during manual scrolling and cancels keyboard focus when the p
   }
 });
 
-it("centers both panels from a source click and recalculates a focused translation after resizing", async () => {
+it("centers both panels from explicit source navigation and recalculates a focused translation after resizing", async () => {
   await click("原文译文");
   const { pane, block } = translationGeometry(800);
   let width = 600,
@@ -812,7 +838,11 @@ it("centers both panels from a source click and recalculates a focused translati
     width = 400;
     height = 500;
     blockHeight = 200;
-    await act(async () => block.click());
+    await act(async () =>
+      block.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      ),
+    );
     await act(async () => {
       await vi.advanceTimersByTimeAsync(400);
     });
@@ -1145,4 +1175,48 @@ it("strips legacy cross-side links when preparing a mark without losing its posi
     "p1-b1",
     "parallel",
   );
+});
+
+it("keeps plain translation clicks passive without moving or scaling either pane", async () => {
+  await click("原文译文");
+  const { pane, block } = translationGeometry();
+  vi.mocked(adapter.focusBlock!).mockClear();
+  vi.mocked(adapter.followBlock!).mockClear();
+  await act(async () => {
+    block.dispatchEvent(
+      new MouseEvent("pointerdown", { bubbles: true, button: 0 }),
+    );
+    block.dispatchEvent(
+      new MouseEvent("pointerup", { bubbles: true, button: 0 }),
+    );
+    block.click();
+  });
+  expect(pane.scrollTop).toBe(0);
+  expect(adapter.focusBlock).not.toHaveBeenCalled();
+  expect(adapter.followBlock).not.toHaveBeenCalled();
+  expect(block.hasAttribute("data-focused")).toBe(false);
+});
+
+it("updates linked paragraph hover without rerendering translated content", async () => {
+  await renderView(defaultTheme, [
+    {
+      id: "p2-extra",
+      page: 2,
+      label: "text",
+      text: "Extra paragraph",
+      bounds: { x: 0.1, y: 0.2, width: 0.8, height: 0.2 },
+    },
+  ]);
+  await click("原文译文");
+  const renders = fixture.markdownRenders;
+  for (let i = 0; i < 50; i++) {
+    const id = i % 2 ? "p1-b1" : "p2-extra";
+    await act(async () => fixture.events!.blockHover?.({ id } as PDFBlock));
+    expect(
+      host
+        .querySelector(`[data-translation-block="${id}"]`)!
+        .hasAttribute("data-hovered"),
+    ).toBe(true);
+  }
+  expect(fixture.markdownRenders - renders).toBe(0);
 });

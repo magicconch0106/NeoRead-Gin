@@ -218,7 +218,7 @@ it.each([false, true])(
       const pending = adapter.focusBlock("focus-target", "source");
       await vi.advanceTimersByTimeAsync(interrupt ? 96 : 500);
       const focused = state.scale;
-      expect(focused).toBeGreaterThan(1);
+      expect(focused).toBeCloseTo(0.83, 2);
       wheel({ deltaY: 100 });
       expect(state.scale).toBeCloseTo(focused / 1.2, 2);
       await vi.advanceTimersByTimeAsync(500);

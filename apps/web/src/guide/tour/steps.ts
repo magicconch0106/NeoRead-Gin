@@ -427,7 +427,7 @@ export const tourSteps: TourStep[] = [
       s.blockFocused
         ? {
             title: "聚焦原文段落",
-            body: "原文段落已聚焦，右侧译文也定位到对应段落。阅读时可以点击其他段落，继续对照查看。",
+            body: "已定位到对应段落。正常阅读时可通过同步滚动对照，单击正文不会改变缩放或阅读位置。",
             focus: [
               tour("source-block"),
               "[data-translation-block][data-focused]",
@@ -437,7 +437,7 @@ export const tourSteps: TourStep[] = [
         : s.sourceBlock
           ? {
               title: "聚焦原文段落",
-              body: "点击鼠标指向的原文段落，聚焦这一段，并让右侧译文定位到对应内容。",
+              body: "点击标记位置，体验原文与译文的对应定位。这是引导演示；正常阅读时，单击正文不会使页面移动或缩放。",
               click: [tour("source-block")],
               pointer: { gesture: "click", target: tour("source-block") },
             }

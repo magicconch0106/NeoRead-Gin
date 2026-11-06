@@ -16,21 +16,22 @@ export function hitBlock(
   x: number,
   y: number,
 ) {
-  return blocks
-    .filter(
-      (b) =>
-        b.page === page &&
-        !isPDFPageDecoration(b) &&
-        (b.image || b.text.trim()) &&
-        x >= b.bounds.x &&
-        y >= b.bounds.y &&
-        x <= b.bounds.x + b.bounds.width &&
-        y <= b.bounds.y + b.bounds.height,
+  let hit: PDFBlock | undefined;
+  for (const b of blocks) {
+    if (
+      b.page === page &&
+      !isPDFPageDecoration(b) &&
+      (b.image || b.text.trim()) &&
+      x >= b.bounds.x &&
+      y >= b.bounds.y &&
+      x <= b.bounds.x + b.bounds.width &&
+      y <= b.bounds.y + b.bounds.height &&
+      (!hit ||
+        b.bounds.width * b.bounds.height < hit.bounds.width * hit.bounds.height)
     )
-    .sort(
-      (a, b) =>
-        a.bounds.width * a.bounds.height - b.bounds.width * b.bounds.height,
-    )[0];
+      hit = b;
+  }
+  return hit;
 }
 export function referenceBlock(
   blocks: PDFBlock[],
@@ -67,6 +68,7 @@ export function referenceBlock(
 // Pointer observation leaves the PDF text and links as the event targets.
 export class PDFBlockOverlay {
   private blocks: PDFBlock[] = [];
+  private pages = new Map<number, PDFBlock[]>();
   private fades = new Map<HTMLElement, Animation>();
   private overlay: HTMLDivElement;
   private root: Root;
@@ -81,7 +83,6 @@ export class PDFBlockOverlay {
   private referenceFlashTimer?: ReturnType<typeof setTimeout>;
   private linked = document.createElement("div");
   private searchBlocks = new Map<string, HTMLDivElement>();
-  private pressed?: { id: string; x: number; y: number };
   constructor(
     private host: HTMLElement,
     private onAction: (
@@ -119,13 +120,17 @@ export class PDFBlockOverlay {
     });
     host.addEventListener("pointermove", this.move);
     host.addEventListener("pointerleave", this.leave);
-    host.addEventListener("pointerdown", this.press);
-    host.addEventListener("click", this.click, true);
     host.addEventListener("pointerup", this.move);
     host.addEventListener("scroll", this.clear, { passive: true });
   }
   setBlocks(blocks: PDFBlock[]) {
     this.blocks = blocks.filter((b) => !isPDFPageDecoration(b));
+    this.pages.clear();
+    for (const block of this.blocks) {
+      const page = this.pages.get(block.page) ?? [];
+      page.push(block);
+      this.pages.set(block.page, page);
+    }
     // Refreshing the same parsed blocks must not dismiss a stationary hover.
     if (this.active) {
       const updated = this.blocks.find((b) => b.id === this.active?.id);
@@ -185,66 +190,12 @@ export class PDFBlockOverlay {
   private leave = () => this.dismiss(false);
   clear = () => this.dismiss(true);
   private dismiss(immediate: boolean) {
-    this.pressed = undefined;
     this.hide(this.overlay, immediate);
     if (this.hovered) {
       this.hovered = undefined;
       this.onHover(null);
     }
     this.paintReadingFocus();
-  }
-  private press = (event: PointerEvent) => {
-    this.pressed = undefined;
-    if (
-      (event.target as Element)?.closest(blockActionTarget) ||
-      event.button !== 0
-    )
-      return;
-    const block = this.find(event);
-    if (block)
-      this.pressed = { id: block.id, x: event.clientX, y: event.clientY };
-  };
-  private click = (event: MouseEvent) => {
-    if ((event.target as Element)?.closest(blockActionTarget)) return;
-    const pressed = this.pressed;
-    this.pressed = undefined;
-    // The annotation listener runs first on this host and claims marked text.
-    if (
-      event.defaultPrevented ||
-      !pressed ||
-      Math.hypot(event.clientX - pressed.x, event.clientY - pressed.y) > 5 ||
-      window.getSelection()?.toString().trim()
-    )
-      return;
-    const block = this.find(event);
-    if (!block || block.id !== pressed.id) return;
-    if ((event.target as Element)?.closest("a, button, input, [role=button]"))
-      return;
-    if (this.onFocus(block)) {
-      if (block.id === this.tourTarget.dataset.blockId)
-        this.tourTarget.dataset.demonstrated = "true";
-      event.preventDefault();
-      event.stopPropagation();
-      this.clear();
-      return;
-    }
-    if (!block.image) return;
-    event.preventDefault();
-    event.stopPropagation();
-    this.onAction(block, "attach");
-  };
-  private find(event: MouseEvent) {
-    const page = (event.target as Element | null)?.closest<HTMLElement>(
-      ".page[data-page-number]",
-    );
-    if (!page || !this.host.contains(page)) return;
-    const rect = page.getBoundingClientRect();
-    return hitBlock(
-      this.blocks,
-      Number(page.dataset.pageNumber),
-      (event.clientX - rect.left) / rect.width,
-      (event.clientY - rect.top) / rect.height,
-    );
   }
   private move = (event: PointerEvent) => {
     if ((event.target as Element | null)?.closest(blockActionTarget)) return;
@@ -261,7 +212,7 @@ export class PDFBlockOverlay {
     }
     const rect = page.getBoundingClientRect();
     const block = hitBlock(
-      this.blocks,
+      this.pages.get(Number(page.dataset.pageNumber)) ?? [],
       Number(page.dataset.pageNumber),
       (event.clientX - rect.left) / rect.width,
       (event.clientY - rect.top) / rect.height,
@@ -270,6 +221,8 @@ export class PDFBlockOverlay {
       this.leave();
       return;
     }
+    if (this.hovered === block.id && this.overlay.parentElement === page)
+      return;
     if (this.active !== block) {
       this.active = block;
       this.root.render(
@@ -451,8 +404,6 @@ export class PDFBlockOverlay {
     this.root.unmount();
     this.host.removeEventListener("pointermove", this.move);
     this.host.removeEventListener("pointerleave", this.leave);
-    this.host.removeEventListener("pointerdown", this.press);
-    this.host.removeEventListener("click", this.click, true);
     this.host.removeEventListener("pointerup", this.move);
     this.host.removeEventListener("scroll", this.clear);
   }

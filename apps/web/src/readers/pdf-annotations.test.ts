@@ -262,10 +262,10 @@ it("gives annotation clicks priority over block focus, including after repaint",
     expect(activate).toHaveBeenCalledTimes(1);
     expect(focus).not.toHaveBeenCalled();
 
-    // Unmarked space in the same block must still focus normally.
+    // Unmarked space leaves ordinary PDF clicks passive.
     pointer("pointerdown", { clientY: 185 });
     pointer("click", { clientY: 185 });
-    expect(focus).toHaveBeenCalledExactlyOnceWith(block);
+    expect(focus).not.toHaveBeenCalled();
     expect(activate).toHaveBeenCalledTimes(1);
   } finally {
     await act(async () => blocks.destroy());

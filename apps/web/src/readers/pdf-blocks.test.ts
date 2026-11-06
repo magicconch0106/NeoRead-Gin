@@ -124,7 +124,7 @@ it("positions the whole-block overlay and clears during selection, scroll and di
   expect(page.querySelector(".neoread-block-hover")).toBeNull();
 });
 
-it("attaches clicks, keeps action buttons interactive, and does not attach drags", async () => {
+it("keeps action buttons interactive while plain clicks and drags stay passive", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const host = document.createElement("div");
   document.body.append(host);
@@ -169,11 +169,11 @@ it("attaches clicks, keeps action buttons interactive, and does not attach drags
   ]);
   event("pointerdown");
   event("click");
-  expect(action).toHaveBeenLastCalledWith(block, "attach");
+  expect(action).toHaveBeenCalledTimes(2);
   event("pointerdown");
   event("pointermove", 230, 1);
   event("click", 230);
-  expect(action).toHaveBeenCalledTimes(3);
+  expect(action).toHaveBeenCalledTimes(2);
   await act(async () => layer.destroy());
   host.remove();
   vi.unstubAllGlobals();
@@ -287,7 +287,7 @@ it("shows passive feedback during positioning, fades it on completion and keeps 
   vi.unstubAllGlobals();
 });
 
-it("focuses text and image clicks without attaching images, and leaves drags and links alone", async () => {
+it("leaves text and image clicks, drags and links to the native PDF", async () => {
   const host = document.createElement("div");
   host.innerHTML =
     '<div class="page" data-page-number="2"><span>Text</span><a href="#note">Link</a></div>';
@@ -311,15 +311,15 @@ it("focuses text and image clicks without attaching images, and leaves drags and
   };
   layer.setBlocks([block]);
   click(target);
-  expect(focus).toHaveBeenLastCalledWith(block);
+  expect(focus).not.toHaveBeenCalled();
   expect(action).not.toHaveBeenCalled();
   const text = { ...block, image: undefined, label: "text", text: "Paragraph" };
   layer.setBlocks([text]);
   click(target);
-  expect(focus).toHaveBeenLastCalledWith(text);
+  expect(focus).not.toHaveBeenCalled();
   click(target, 250);
   click(page.querySelector("a")!);
-  expect(focus).toHaveBeenCalledTimes(2);
+  expect(focus).not.toHaveBeenCalled();
   layer.destroy();
 });
 

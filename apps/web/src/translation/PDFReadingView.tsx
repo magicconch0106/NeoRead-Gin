@@ -94,13 +94,24 @@ export function PDFReadingView({
   const { translations, error } = useTranslations(doc.id);
   const [popup, setPopup] = useState<{ block: PDFBlock; rect: DOMRect }>();
   const [engine, setEngine] = useState<ReaderAdapter>();
-  const [hoveredBlock, setHoveredBlock] = useState<string>();
+  const hoveredBlock = useRef<string | undefined>(undefined);
+  const translationNodes = useRef(new Map<string, HTMLElement>());
   const [focusedBlock, setFocusedBlock] = useState<string>();
   const hoverOwner = useRef<"source" | "translation" | undefined>(undefined);
   const hover = (origin: "source" | "translation", blockId?: string) => {
     if (!blockId && hoverOwner.current !== origin) return;
+    if (hoveredBlock.current === blockId && hoverOwner.current === origin)
+      return;
+    if (hoveredBlock.current)
+      translationNodes.current
+        .get(hoveredBlock.current)
+        ?.removeAttribute("data-hovered");
+    hoveredBlock.current = blockId;
     hoverOwner.current = blockId ? origin : undefined;
-    setHoveredBlock(blockId);
+    if (blockId)
+      translationNodes.current
+        .get(blockId)
+        ?.setAttribute("data-hovered", "true");
     engine?.hoverBlock?.(
       mode === "parallel" && origin === "translation"
         ? (blockId ?? null)
@@ -127,9 +138,6 @@ export function PDFReadingView({
     moving: false,
     blockId: "",
   });
-  const pressedBlock = useRef<{ id: string; x: number; y: number } | undefined>(
-    undefined,
-  );
   const cancelTranslationMotion = () => {
     translationMotion.current.operation++;
     translationMotion.current.moving = false;
@@ -198,8 +206,19 @@ export function PDFReadingView({
       setBlockImages(undefined);
     };
   }, [engine, blocks]);
-  const visibleBlocks = blocks.filter(
-    (b) => !isPDFPageDecoration(b) && !equationNumbers.pairedIds.has(b.id),
+  const visibleBlocks = useMemo(
+    () =>
+      blocks.filter(
+        (b) => !isPDFPageDecoration(b) && !equationNumbers.pairedIds.has(b.id),
+      ),
+    [blocks, equationNumbers],
+  );
+  const sourceAnnotations = useMemo(
+    () =>
+      annotations.filter(
+        (a) => a.location.type !== "pdf" || !a.location.translation,
+      ),
+    [annotations],
   );
   const searchBlockIds = useMemo(
     () => [
@@ -224,11 +243,7 @@ export function PDFReadingView({
       toast.error((e as Error).message);
     }
   };
-  const targetNode = (id: string) =>
-    Array.from(
-      pane.current?.querySelectorAll<HTMLElement>("[data-translation-block]") ??
-        [],
-    ).find((n) => n.dataset.translationBlock === id);
+  const targetNode = (id: string) => translationNodes.current.get(id);
   const followTranslation = (
     anchor: PDFReadingAnchor,
     sentenceIndex?: number,
@@ -561,7 +576,11 @@ export function PDFReadingView({
   useEffect(() => {
     if (!engine || !active) return;
     hoverOwner.current = undefined;
-    setHoveredBlock(undefined);
+    if (hoveredBlock.current)
+      translationNodes.current
+        .get(hoveredBlock.current)
+        ?.removeAttribute("data-hovered");
+    hoveredBlock.current = undefined;
     engine.hoverBlock?.(null);
     const previous = previousMode.current;
     previousMode.current = mode;
@@ -659,10 +678,21 @@ export function PDFReadingView({
         return;
       const v = pane.current.getBoundingClientRect(),
         y = v.top + v.height * 0.5;
-      const nodes = Array.from(
-        pane.current.querySelectorAll<HTMLElement>("[data-translation-block]"),
-      );
-      const node = nodes.find((n) => n.getBoundingClientRect().bottom > y);
+      // Sections stay in document order. Locate the center with logarithmic
+      // geometry reads instead of scanning every translated paragraph per frame.
+      let low = 0,
+        high = visibleBlocks.length;
+      while (low < high) {
+        const middle = (low + high) >>> 1;
+        const candidate = targetNode(visibleBlocks[middle].id);
+        if (candidate && candidate.getBoundingClientRect().bottom <= y)
+          low = middle + 1;
+        else high = middle;
+      }
+      const node =
+        low < visibleBlocks.length
+          ? targetNode(visibleBlocks[low].id)
+          : undefined;
       if (!node) return;
       const r = node.getBoundingClientRect(),
         anchor = {
@@ -797,9 +827,7 @@ export function PDFReadingView({
               active={active}
               document={doc}
               theme={theme}
-              annotations={annotations.filter(
-                (a) => a.location.type !== "pdf" || !a.location.translation,
-              )}
+              annotations={sourceAnnotations}
               blocks={blocks}
               onReady={ready}
               events={{
@@ -873,14 +901,6 @@ export function PDFReadingView({
                 const section = (event.target as Element).closest<HTMLElement>(
                   "[data-translation-block]",
                 );
-                pressedBlock.current =
-                  section && event.button === 0
-                    ? {
-                        id: section.dataset.translationBlock!,
-                        x: event.clientX,
-                        y: event.clientY,
-                      }
-                    : undefined;
                 input("translation");
                 hover("translation");
                 // The viewport itself receives scrollbar presses. Keep following
@@ -952,31 +972,15 @@ export function PDFReadingView({
                     data-translation-block={block.id}
                     data-block-kind={block.image ? "image" : "text"}
                     data-label={block.label}
-                    data-hovered={hoveredBlock === block.id || undefined}
                     data-focused={focusedBlock === block.id || undefined}
                     data-search-hit={
                       searchBlockIds.includes(block.id) || undefined
                     }
                     aria-current={focusedBlock === block.id || undefined}
                     tabIndex={0}
-                    onClick={(event) => {
-                      const pressed = pressedBlock.current;
-                      pressedBlock.current = undefined;
-                      if (
-                        (event.target as Element).closest(
-                          "a, button, input, textarea, select, [role=button], [contenteditable=true]",
-                        ) ||
-                        window.getSelection()?.toString().trim() ||
-                        (event.detail > 0 &&
-                          (!pressed ||
-                            pressed.id !== block.id ||
-                            Math.hypot(
-                              event.clientX - pressed.x,
-                              event.clientY - pressed.y,
-                            ) > 5))
-                      )
-                        return;
-                      focusTranslation(block);
+                    ref={(node) => {
+                      if (node) translationNodes.current.set(block.id, node);
+                      else translationNodes.current.delete(block.id);
                     }}
                     onKeyDown={(event) => {
                       if (

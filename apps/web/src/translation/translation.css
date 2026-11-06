@@ -376,3 +376,13 @@
     animation: none;
   }
 }
+
+/* Keep the original PDF page visually continuous; preserve the action toolbar. */
+.pdf-container .page .neoread-block-hover[data-block-kind="text"] {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+.pdf-container .page .neoread-block-counterpart[data-block-kind="text"] {
+  background: rgb(128 128 128 / 5%);
+}

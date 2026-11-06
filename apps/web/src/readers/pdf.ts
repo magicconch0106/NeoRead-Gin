@@ -589,15 +589,10 @@ export class PDFReaderAdapter implements ReaderAdapter {
     if (location.type !== "pdf" || this.disposed) return false;
     const block = referenceBlock(this.blockData, location, text);
     if (!block) return false;
-    this.fitWidth = false;
     this.clearSelection();
-    this.appliedZoom = this.viewer.currentScale;
-    this.events.zoom?.(this.appliedZoom, "focus");
     this.viewport.reset();
     const reached = await this.navigation.focusBlock(block.id, "source");
     if (reached) {
-      this.appliedZoom = this.viewer.currentScale;
-      this.events.zoom?.(this.appliedZoom, "focus");
       this.viewport.reset();
       this.location = { ...location, page: block.page };
       this.events.location(
@@ -629,17 +624,9 @@ export class PDFReaderAdapter implements ReaderAdapter {
   async focusBlock(blockId: string, layout: "source" | "parallel") {
     this.viewport.cancelAnimation();
     if (!this.blockData.some((block) => block.id === blockId)) return;
-    this.fitWidth = false;
     this.clearSelection();
-    this.appliedZoom = this.viewer.currentScale;
-    this.events.zoom?.(this.appliedZoom, "focus");
-    this.viewport.reset();
-    const reached = await this.navigation.focusBlock(blockId, layout);
-    if (reached) {
-      this.appliedZoom = this.viewer.currentScale;
-      this.events.zoom?.(this.appliedZoom, "focus");
-      this.viewport.reset();
-    }
+    await this.navigation.focusBlock(blockId, layout);
+    this.viewport.remember();
   }
   cancelBlockFocus() {
     this.navigation.cancelMotion();
