@@ -1,0 +1,27 @@
+name: Build Gin for Apple Silicon
+run-name: Mac sharing build · ${{ inputs.source-ref }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source-ref:
+        description: "Existing Gin version to package for Apple Silicon"
+        required: true
+        default: "v0.10.1-gin.3"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gin-mac-share-${{ inputs.source-ref }}
+  cancel-in-progress: false
+
+jobs:
+  desktop:
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ inputs.source-ref }}
+      # Personal sharing builds use ad-hoc signing; no upstream certificate.
+      release-tag: ""
+      mac-only: true
