@@ -12,6 +12,24 @@ import { downloadUpdate, type DownloadProgress } from "./update-download";
 import type { UpdateProgress } from "../../../packages/neoread-core/src/update-progress";
 
 export async function startUpdateService(window: BrowserWindow) {
+  // Personal builds retain their custom reader changes across upstream releases.
+  if (app.getVersion().includes("-gin.")) {
+    let stopped = false;
+    return {
+      check: async () => {
+        if (stopped || window.isDestroyed()) return;
+        await dialog.showMessageBox(window, {
+          type: "info",
+          message: "当前为 Gin 个人版",
+          detail: `版本：${app.getVersion()}。请通过自己的私密仓库获取个人版安装包，以保留阅读界面修改。`,
+          buttons: ["知道了"],
+        });
+      },
+      stop: () => {
+        stopped = true;
+      },
+    };
+  }
   const directory = app.getPath("userData");
   const statePath = join(directory, "update-state.json");
   let state: UpdateState = {};

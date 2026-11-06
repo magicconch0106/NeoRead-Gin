@@ -21,7 +21,7 @@ const mocks = vi.hoisted(() => ({
       name === "exe"
         ? "/Applications/NeoRead.app/Contents/MacOS/NeoRead"
         : "/test/user-data",
-    getVersion: () => "0.1.0",
+    getVersion: (): string => "0.1.0",
   },
 }));
 vi.mock("electron", () => ({
@@ -411,4 +411,25 @@ it("does not open the release page after the service stops while showing an erro
   });
   await service.check();
   expect(mocks.external).not.toHaveBeenCalled();
+});
+
+it("keeps personal Gin builds on their own update channel", async () => {
+  const version = vi
+    .spyOn(mocks.app, "getVersion")
+    .mockReturnValue("0.10.1-gin.1");
+  try {
+    const service = await startUpdateService(window);
+    stop = service.stop;
+    await vi.advanceTimersByTimeAsync(day * 2);
+    expect(mocks.fetch).not.toHaveBeenCalled();
+    await service.check();
+    expect(mocks.dialog).toHaveBeenCalledWith(
+      window,
+      expect.objectContaining({ message: "当前为 Gin 个人版" }),
+    );
+    expect(mocks.fetch).not.toHaveBeenCalled();
+    expect(mocks.download).not.toHaveBeenCalled();
+  } finally {
+    version.mockRestore();
+  }
 });
