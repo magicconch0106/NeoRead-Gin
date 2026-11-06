@@ -6,6 +6,9 @@ import {
   useMemo,
   useRef,
   useState,
+  useCallback,
+  memo,
+  type ComponentProps,
   type ReactNode,
 } from "react";
 import { useTranslations } from "./useTranslations";
@@ -58,6 +61,19 @@ import { chapterRange, headingPages } from "./chapters";
 import { searchPDFBlocks } from "./pdf-search";
 
 type Mode = "source" | "parallel" | "translation";
+// Progress and hover updates must not re-render every sentence and formula.
+const PDFTranslationText = memo(function PDFTranslationText({
+  requestTranslation,
+  ...props
+}: Omit<ComponentProps<typeof TranslationText>, "retry"> & {
+  requestTranslation: (blockId: string) => Promise<void>;
+}) {
+  const retry = useCallback(
+    () => void requestTranslation(props.block.id),
+    [requestTranslation, props.block.id],
+  );
+  return <TranslationText {...props} retry={retry} />;
+});
 export function PDFReadingView({
   document: doc,
   active = true,
@@ -242,13 +258,16 @@ export function PDFReadingView({
   useEffect(() => {
     if (pane.current) return installTranslationSelectionHighlight(pane.current);
   }, [mode, doc.id]);
-  const translate = async (blockId = "") => {
-    try {
-      await api.translate(doc.id, blockId);
-    } catch (e) {
-      toast.error((e as Error).message);
-    }
-  };
+  const translate = useCallback(
+    async (blockId = "") => {
+      try {
+        await api.translate(doc.id, blockId);
+      } catch (e) {
+        toast.error((e as Error).message);
+      }
+    },
+    [doc.id],
+  );
   const targetNode = (id: string) => translationNodes.current.get(id);
   const followTranslation = (
     anchor: PDFReadingAnchor,
@@ -471,6 +490,13 @@ export function PDFReadingView({
       toast.error((e as Error).message);
     }
   };
+  const citationAction = useRef(visitCitation);
+  citationAction.current = visitCitation;
+  const followCitation = useCallback(
+    (blockId: string, label: string) =>
+      void citationAction.current(blockId, label),
+    [],
+  );
   const ready = (adapter: ReaderAdapter, toc: TOCItem[]) => {
     outline.current = toc;
     setEngine(adapter);
@@ -1021,16 +1047,14 @@ export function PDFReadingView({
                       noteIndexes.length ? "translation-annotated" : ""
                     }
                   >
-                    <TranslationText
+                    <PDFTranslationText
                       block={block}
-                      onCitation={(blockId, label) =>
-                        void visitCitation(blockId, label)
-                      }
+                      onCitation={followCitation}
                       formulaNumber={equationNumbers.byFormula.get(block.id)}
                       translation={translated}
                       documentId={doc.id}
                       renderImage={blockImages?.url}
-                      retry={() => void translate(block.id)}
+                      requestTranslation={translate}
                       paused={processing?.enabled === false}
                     />
                     {noteIndexes.length > 0 && (
@@ -1065,9 +1089,7 @@ export function PDFReadingView({
             <>
               <TranslationText
                 block={popup.block}
-                onCitation={(blockId, label) =>
-                  void visitCitation(blockId, label)
-                }
+                onCitation={followCitation}
                 formulaNumber={equationNumbers.byFormula.get(popup.block.id)}
                 translation={activePopup}
                 documentId={doc.id}

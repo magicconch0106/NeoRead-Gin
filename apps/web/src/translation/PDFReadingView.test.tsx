@@ -1236,3 +1236,49 @@ it("matches source body size by default and retains only explicit translation of
   await act(async () => fixture.events!.bodyFontSize?.(NaN));
   expect(size()).toBe("30px");
 });
+
+it("keeps a long document's unchanged translations out of progress rerenders and updates only changed blocks", async () => {
+  const blocks: PDFBlock[] = Array.from({ length: 100 }, (_, i) => ({
+    id: `long-${i}`,
+    page: Math.floor(i / 10) + 1,
+    label: "text",
+    text: `Original ${i}.`,
+    bounds: { x: 0.1, y: 0.2, width: 0.8, height: 0.1 },
+  }));
+  fixture.translations = blocks.map((block, i) => ({
+    blockId: block.id,
+    sourceHash: "hash",
+    status: "complete",
+    sentences: [{ source: block.text, target: `Translation ${i}.` }],
+  }));
+  const annotations: never[] = [];
+  const render = (progress: number) =>
+    root.render(
+      <PDFReadingView
+        document={
+          { id: "long-doc", type: "pdf", percentage: progress } as Document
+        }
+        theme={defaultTheme}
+        annotations={annotations}
+        blocks={blocks}
+        events={{ ...events }}
+        onReady={() => {}}
+      />,
+    );
+  await act(async () => render(0));
+  await click("原文译文");
+  const renders = fixture.markdownRenders;
+  for (let i = 1; i <= 10; i++) await act(async () => render(i / 100));
+  expect(fixture.markdownRenders).toBe(renders);
+  await act(async () =>
+    fixture.push!({
+      event: "translation",
+      data: {
+        ...fixture.translations[0],
+        sentences: [{ source: blocks[0].text, target: "Updated translation." }],
+      },
+    }),
+  );
+  expect(host.textContent).toContain("Updated translation.");
+  expect(fixture.markdownRenders - renders).toBe(1);
+});

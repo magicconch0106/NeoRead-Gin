@@ -1,7 +1,7 @@
 import { FormulaRow } from "./FormulaRow";
 import katex from "katex";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
-import type { ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 
 export default function FormulaFragment({
   content,
@@ -12,22 +12,25 @@ export default function FormulaFragment({
   fallback: ReactNode;
   number?: string;
 }) {
-  const expressions = [...content.matchAll(/\$\$([\s\S]*?)\$\$/g)];
-  try {
-    if (!expressions.length)
-      return <FormulaRow number={number}>{fallback}</FormulaRow>;
-    for (const expression of expressions) {
-      katex.renderToString(expression[1], {
-        throwOnError: true,
-        trust: false,
-        strict: "ignore",
-        maxExpand: 100,
-        maxSize: 20,
-      });
+  const valid = useMemo(() => {
+    const expressions = [...content.matchAll(/\$\$([\s\S]*?)\$\$/g)];
+    if (!expressions.length) return false;
+    try {
+      for (const expression of expressions) {
+        katex.renderToString(expression[1], {
+          throwOnError: true,
+          trust: false,
+          strict: "ignore",
+          maxExpand: 100,
+          maxSize: 20,
+        });
+      }
+      return true;
+    } catch {
+      return false;
     }
-  } catch {
-    return <FormulaRow number={number}>{fallback}</FormulaRow>;
-  }
+  }, [content]);
+  if (!valid) return <FormulaRow number={number}>{fallback}</FormulaRow>;
   return (
     <div className="translation-formula">
       <FormulaRow number={number}>
