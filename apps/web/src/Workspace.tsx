@@ -37,6 +37,7 @@ import {
   BookmarkPlus,
   Sparkles,
   Settings2,
+  Scan,
   Underline,
   MessageSquare,
   X,
@@ -1146,6 +1147,16 @@ export function Workspace({
           <div ref={setReadingToolbar} data-tour="reading-modes" />
           <span className="toolbar-divider" />
           <div ref={setSourceAutoCenterToolbar} />
+          {doc.type === "pdf" && (
+            <IconButton
+              label="适配页面与文字"
+              onClick={() =>
+                setTheme({ zoom: "width", translationFontSize: 1 })
+              }
+            >
+              <Scan />
+            </IconButton>
+          )}
           <IconButton
             label="添加书签"
             onClick={() => void annotate("bookmark")}
