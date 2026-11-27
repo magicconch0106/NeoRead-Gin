@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
 import { expect, it } from "vitest";
 import { PDFDocument, PDFName, StandardFonts, degrees, rgb } from "pdf-lib";
-import type { PDFBlock, TranslationBlock } from "@neoread/core";
+import type { Annotation, PDFBlock, TranslationBlock } from "@neoread/core";
 import { translatedPDF, type ExportCanvas } from "./pdf-export";
 import { embedExportFonts, type FontBytes } from "./pdf-fonts";
 import { preparePDFText } from "./pdf-math";
@@ -573,3 +573,328 @@ it.each(["pdf_decode", "font_embed"] as const)(
     ).rejects.toMatchObject({ reason });
   },
 );
+
+it("preserves translation-side phrase highlights, underlines, Q&A comments and outline", async () => {
+  const f = await fixture();
+  const leftHash = f.translations[0].sourceHash;
+  const rightHash = f.translations[1].sourceHash;
+  const annotations: Annotation[] = [
+    {
+      id: "phrase-note",
+      documentId: "doc",
+      kind: "note",
+      quote: "页面布局",
+      note: "重点保留布局",
+      color: "#facc15",
+      createdAt: "2026-11-27T02:00:00.000Z",
+      location: {
+        type: "pdf",
+        page: 1,
+        translation: {
+          blockId: "left",
+          sourceHash: leftHash,
+          sentenceIndexes: [0],
+          start: 11,
+          end: 15,
+          ranges: [
+            {
+              blockId: "left",
+              sourceHash: leftHash,
+              sentenceIndexes: [0],
+              start: 11,
+              end: 15,
+              quote: "页面布局",
+            },
+          ],
+        },
+      },
+    },
+    {
+      id: "trans-underline",
+      documentId: "doc",
+      kind: "underline",
+      quote: "保留页面布局。",
+      note: "",
+      color: "#3b82f6",
+      createdAt: "2026-11-27T02:01:00.000Z",
+      location: {
+        type: "pdf",
+        page: 1,
+        translation: {
+          blockId: "right",
+          sourceHash: rightHash,
+          sentenceIndexes: [0],
+          start: 9,
+          end: 16,
+          ranges: [
+            {
+              blockId: "right",
+              sourceHash: rightHash,
+              sentenceIndexes: [0],
+              start: 9,
+              end: 16,
+              quote: "保留页面布局。",
+            },
+          ],
+        },
+      },
+    },
+    {
+      id: "trans-question",
+      documentId: "doc",
+      kind: "question",
+      quote: "我们将译文",
+      note: "为什么在原区域排版？",
+      answerId: "ans-1",
+      color: "#22c55e",
+      createdAt: "2026-11-27T02:02:00.000Z",
+      location: {
+        type: "pdf",
+        page: 1,
+        translation: {
+          blockId: "left",
+          sourceHash: leftHash,
+          sentenceIndexes: [0],
+          start: 0,
+          end: 5,
+          ranges: [
+            {
+              blockId: "left",
+              sourceHash: leftHash,
+              sentenceIndexes: [0],
+              start: 0,
+              end: 5,
+              quote: "我们将译文",
+            },
+          ],
+        },
+      },
+    },
+    {
+      id: "stale-mark",
+      documentId: "doc",
+      kind: "highlight",
+      quote: "旧译文",
+      note: "",
+      color: "#facc15",
+      createdAt: "2026-11-27T02:03:00.000Z",
+      location: {
+        type: "pdf",
+        page: 1,
+        translation: {
+          blockId: "left",
+          sourceHash: "stale-hash",
+          sentenceIndexes: [0],
+          start: 0,
+          end: 3,
+        },
+      },
+    },
+  ];
+
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const result = await translatedPDF(
+    pdfjs.getDocument,
+    { data: await f.doc.save(), useSystemFonts: true },
+    f.blocks,
+    f.translations,
+    await fontBytes,
+    {
+      createCanvas: canvas,
+      annotations,
+      answers: { "ans-1": "为了对照原图与公式。" },
+      navigation: async () => [
+        {
+          id: "sec-1",
+          label: "第一章 导言",
+          location: { type: "pdf", page: 1, x: 0.075, y: 0.08 },
+          children: [],
+        },
+      ],
+    },
+  );
+  expect(result).toMatchObject({
+    translated: 2,
+    annotationsExported: 3,
+    annotationsSkipped: 1,
+    navigationExported: 1,
+  });
+
+  const task = pdfjs.getDocument({
+    data: result.bytes.slice(),
+    useSystemFonts: true,
+  });
+  try {
+    const pdf = await task.promise;
+    const outline = await pdf.getOutline();
+    expect(outline?.map((o) => o.title)).toEqual(["第一章 导言"]);
+
+    const page = await pdf.getPage(1);
+    const annots = (await page.getAnnotations()).filter(
+      (a) => a.subtype !== "Popup",
+    );
+    expect(annots).toHaveLength(3);
+
+    const noteAnnot = annots.find(
+      (a) => a.contentsObj?.str === "重点保留布局",
+    )!;
+    expect(noteAnnot.subtype).toBe("Highlight");
+    expect(Array.from(noteAnnot.color)).toEqual([250, 204, 21]);
+    // "页面布局" wraps across line 1 ("页", ~10 pt at x≈180..190) and line 2 ("面布局", ~30 pt at x≈30..60).
+    expect(noteAnnot.quadPoints).toHaveLength(16);
+    expect(noteAnnot.quadPoints[0]).toBeGreaterThan(170);
+    expect(noteAnnot.quadPoints[2] - noteAnnot.quadPoints[0]).toBeCloseTo(
+      10,
+      0,
+    );
+    expect(noteAnnot.quadPoints[8]).toBeCloseTo(30, 0);
+    expect(noteAnnot.quadPoints[10] - noteAnnot.quadPoints[8]).toBeCloseTo(
+      30,
+      0,
+    );
+
+    const underlineAnnot = annots.find(
+      (a) => Array.from(a.color).join() === "59,130,246",
+    )!;
+    expect(underlineAnnot.opacity).toBe(1);
+    // "保留页面布局。" wraps across two lines (12.5 pt apart), each with a 1.5 pt bottom strip.
+    expect(underlineAnnot.quadPoints).toHaveLength(16);
+    expect(
+      underlineAnnot.quadPoints[1] - underlineAnnot.quadPoints[5],
+    ).toBeCloseTo(1.5, 1);
+    expect(
+      underlineAnnot.quadPoints[9] - underlineAnnot.quadPoints[13],
+    ).toBeCloseTo(1.5, 1);
+    expect(underlineAnnot.rect[0]).toBeGreaterThanOrEqual(220);
+
+    const questionAnnot = annots.find((a) =>
+      a.contentsObj?.str?.includes("问题：为什么在原区域排版？"),
+    )!;
+    expect(questionAnnot.contentsObj.str).toBe(
+      "问题：为什么在原区域排版？\n\n回答：为了对照原图与公式。",
+    );
+  } finally {
+    await task.destroy();
+  }
+});
+
+it("maps source-side annotations onto translated sentences and keeps preserved-area marks intact", async () => {
+  const f = await fixture();
+  // Give the left block two distinct sentences so we can verify sentence-level mapping.
+  f.translations[0] = {
+    blockId: "left",
+    status: "complete",
+    sourceHash: createHash("sha256")
+      .update(`zh-CN:v1:${f.blocks[0].text.trim()}`)
+      .digest("hex"),
+    sentences: [
+      { source: "Original paragraph on the left.", target: "左侧第一句译文。" },
+      { source: "Second line of source text.", target: "第二句关键结论。" },
+    ],
+  };
+  // Force the right block to overflow so its original English text stays intact.
+  f.translations[1].sentences[0].target = "超长译文保留原文。".repeat(80);
+
+  const annotations: Annotation[] = [
+    {
+      id: "src-second-sentence",
+      documentId: "doc",
+      kind: "highlight",
+      quote: "Second line of source text.",
+      note: "原文第二句批注",
+      color: "#facc15",
+      createdAt: "2026-11-27T02:10:00.000Z",
+      location: {
+        type: "pdf",
+        page: 1,
+        quote: "Second line of source text.",
+        // Line 2 of left paragraph is drawn at PDF y=436 => displayed y ≈ 54..66 out of 500.
+        rects: [
+          { x: 30 / 400, y: 54 / 500, width: 120 / 400, height: 12 / 500 },
+        ],
+      },
+    },
+    {
+      id: "src-preserved-figure",
+      documentId: "doc",
+      kind: "note",
+      quote: "",
+      note: "蓝色示意图批注",
+      color: "#ef4444",
+      createdAt: "2026-11-27T02:11:00.000Z",
+      location: {
+        type: "pdf",
+        page: 1,
+        rects: [
+          { x: 40 / 400, y: 180 / 500, width: 80 / 400, height: 40 / 500 },
+        ],
+      },
+    },
+    {
+      id: "trans-on-preserved-english",
+      documentId: "doc",
+      kind: "highlight",
+      quote: "超长译文",
+      note: "溢出段回退原文仍保留批注",
+      color: "#a855f7",
+      createdAt: "2026-11-27T02:12:00.000Z",
+      location: {
+        type: "pdf",
+        page: 1,
+        translation: {
+          blockId: "right",
+          sourceHash: f.translations[1].sourceHash,
+          sentenceIndexes: [0],
+          start: 0,
+          end: 4,
+        },
+      },
+    },
+  ];
+
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const result = await translatedPDF(
+    pdfjs.getDocument,
+    { data: await f.doc.save(), useSystemFonts: true },
+    f.blocks,
+    f.translations,
+    await fontBytes,
+    { createCanvas: canvas, annotations },
+  );
+  expect(result.translated).toBe(1);
+  expect(result.annotationsExported).toBe(3);
+  expect(result.annotationsSkipped).toBe(0);
+
+  const task = pdfjs.getDocument({
+    data: result.bytes.slice(),
+    useSystemFonts: true,
+  });
+  try {
+    const pdf = await task.promise;
+    const page = await pdf.getPage(1);
+    const annots = (await page.getAnnotations()).filter(
+      (a) => a.subtype !== "Popup",
+    );
+    expect(annots).toHaveLength(3);
+
+    const secondSent = annots.find(
+      (a) => a.contentsObj?.str === "原文第二句批注",
+    )!;
+    // "左侧第一句译文。 第二句关键结论。" fits on one Chinese line starting at x=30;
+    // the second sentence starts well to the right of x=30!
+    expect(secondSent.rect[0]).toBeGreaterThan(80);
+
+    const figureAnnot = annots.find(
+      (a) => a.contentsObj?.str === "蓝色示意图批注",
+    )!;
+    expect(figureAnnot.rect[0]).toBeCloseTo(40, 0);
+    expect(figureAnnot.rect[2]).toBeCloseTo(120, 0);
+
+    const fallbackAnnot = annots.find(
+      (a) => a.contentsObj?.str === "溢出段回退原文仍保留批注",
+    )!;
+    expect(fallbackAnnot.rect[0]).toBeGreaterThanOrEqual(219);
+  } finally {
+    await task.destroy();
+  }
+});

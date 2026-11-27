@@ -203,6 +203,27 @@ it.each(["取消", "Close"])(
   },
 );
 
+it("opens the export dialog directly from the top reading toolbar even when sidebars are closed", async () => {
+  useReaderStore.setState({
+    theme: {
+      ...defaultTheme,
+      readerLayout: { navigationOpen: false, assistantOpen: false },
+    },
+  });
+  await act(async () => render(0));
+  const toolbarExport = host.querySelector<HTMLButtonElement>(
+    '.neoread-toolbar button[aria-label="导出"]',
+  )!;
+  expect(toolbarExport).toBeTruthy();
+  expect(toolbarExport.getAttribute("aria-expanded")).toBe("false");
+  await act(async () => toolbarExport.click());
+  expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+  expect(toolbarExport.getAttribute("aria-expanded")).toBe("true");
+  await act(async () => button("取消").click());
+  expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(0);
+  expect(toolbarExport.getAttribute("aria-expanded")).toBe("false");
+});
+
 it("loads saved annotations without running recovery on open or progress updates", async () => {
   await act(async () => render(0));
   await act(async () => {

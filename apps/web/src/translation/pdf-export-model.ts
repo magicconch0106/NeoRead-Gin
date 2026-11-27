@@ -25,4 +25,7 @@ export type TranslatedPDF = {
   translated: number;
   pages: number;
   issues: ExportIssue[];
+  annotationsExported?: number;
+  annotationsSkipped?: number;
+  navigationExported?: number;
 };

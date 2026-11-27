@@ -15,7 +15,16 @@ import type {
 
 type Rect = { x: number; y: number; width: number; height: number };
 /** A quadrilateral in PDF user space: top-left, top-right, bottom-left, bottom-right. */
-type Quad = [number, number, number, number, number, number, number, number];
+export type Quad = [
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+];
 
 export interface AnnotatedPDF {
   bytes: Uint8Array;
@@ -25,7 +34,7 @@ export interface AnnotatedPDF {
   skipped: number;
 }
 
-const editorPrefix = "pdfjs_internal_editor_";
+export const editorPrefix = "pdfjs_internal_editor_";
 const highlightType = 9;
 /** Points; the reader draws a 2 px underline at 100 % zoom. */
 const underlineWidth = 1.5;
@@ -82,7 +91,7 @@ const compact = (text: string) => text.replace(/\s+/g, "").toLowerCase();
 
 // NeoRead stores rects relative to the displayed page, which includes /Rotate
 // and the crop box; the viewport maps them back to PDF user space.
-function displayQuads(page: PDFPageProxy, rects: Rect[]): Quad[] {
+export function displayQuads(page: PDFPageProxy, rects: Rect[]): Quad[] {
   const viewport = page.getViewport({ scale: 1 });
   const point = (x: number, y: number) =>
     viewport.convertToPdfPoint(x * viewport.width, y * viewport.height) as [
@@ -121,7 +130,7 @@ export function bottomStrip(q: Quad, thickness = underlineWidth): Quad {
   ] as Quad;
 }
 
-function editorValue(
+export function editorValue(
   annotation: Annotation,
   pageIndex: number,
   quads: Quad[],
@@ -164,10 +173,11 @@ function editorValue(
   };
 }
 
-async function sentenceQuads(
+export async function sentenceQuads(
   page: PDFPageProxy,
   block: Rect,
   sources: string[],
+  sourceOffset = 0,
 ): Promise<Quad[]> {
   const viewport = page.getViewport({ scale: 1 });
   const content = await page.getTextContent();
@@ -209,7 +219,7 @@ async function sentenceQuads(
     text += value;
   }
   const needles = sources.map(compact).filter(Boolean);
-  const ranges = sentenceTextRanges(text, text, needles);
+  const ranges = sentenceTextRanges(text, text, needles, sourceOffset);
   if (!needles.length || ranges.length < needles.length) return [];
   const quads: Quad[] = [];
   for (const range of ranges)

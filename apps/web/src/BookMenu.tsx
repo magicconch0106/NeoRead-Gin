@@ -16,6 +16,7 @@ import {
   DropdownMenuSeparator,
 } from "@neoread/ui/components/dropdown-menu";
 import { exportAnnotatedPDFWithToast } from "./annotated-pdf-export";
+import { exportTranslatedPDFWithToast } from "./translated-pdf-export";
 import { reparseDocument } from "./reparse-document";
 
 const kits = {
@@ -56,10 +57,16 @@ export function BookMenuItems({
         重新解析
       </K.Item>
       {doc.type === "pdf" && (
-        <K.Item onClick={() => void exportAnnotatedPDFWithToast(doc)}>
-          <FileDown />
-          导出带批注的 PDF
-        </K.Item>
+        <>
+          <K.Item onClick={() => void exportAnnotatedPDFWithToast(doc)}>
+            <FileDown />
+            导出带批注的 PDF
+          </K.Item>
+          <K.Item onClick={() => void exportTranslatedPDFWithToast(doc)}>
+            <FileDown />
+            导出带批注的译文 PDF
+          </K.Item>
+        </>
       )}
       {actions.move && (doc.type === "pdf" || doc.library === "papers") && (
         <K.Item

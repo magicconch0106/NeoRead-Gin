@@ -15,11 +15,17 @@ import {
   rgb,
   type PDFPage,
 } from "pdf-lib";
-import type { PDFBlock, TranslationBlock } from "@neoread/core";
+import type {
+  Annotation,
+  PDFBlock,
+  TOCItem,
+  TranslationBlock,
+} from "@neoread/core";
 import { pdfFontAscent } from "../../../../packages/neoread-core/src/pdf-text";
 import type {
   DocumentInitParameters,
   PDFDocumentLoadingTask,
+  PDFDocumentProxy,
   PDFPageProxy,
 } from "pdfjs-dist/types/src/display/api";
 import { fitText, overlaps, validRect, type Rect } from "./pdf-layout";
@@ -27,6 +33,10 @@ import { splitLegacyCaptions } from "./pdf-captions";
 import { matchesSource, preservedLabels } from "./pdf-content";
 import { preparePDFText } from "./pdf-math";
 import { embedExportFonts, type FontBytes } from "./pdf-fonts";
+import {
+  applyTranslatedPDFAnnotations,
+  type TranslatedBlockRecord,
+} from "./pdf-export-annotations";
 
 import type {
   ExportIssue,
@@ -42,6 +52,9 @@ export type ExportOptions = {
   signal?: AbortSignal;
   onProgress?: (progress: PDFExportProgress) => void;
   createCanvas?: (width: number, height: number) => ExportCanvas;
+  annotations?: Annotation[];
+  answers?: Record<string, string>;
+  navigation?: (pdf: PDFDocumentProxy) => Promise<TOCItem[]>;
 };
 
 function browserCanvas(width: number, height: number): ExportCanvas {
@@ -191,7 +204,14 @@ export async function translatedPDF(
   blocks: PDFBlock[],
   translations: TranslationBlock[],
   fontBytes: FontBytes,
-  { signal, onProgress, createCanvas = browserCanvas }: ExportOptions = {},
+  {
+    signal,
+    onProgress,
+    createCanvas = browserCanvas,
+    annotations,
+    answers,
+    navigation,
+  }: ExportOptions = {},
 ): Promise<TranslatedPDF> {
   signal?.throwIfAborted();
   onProgress?.({ phase: "preparing", done: 0, total: 0 });
@@ -232,6 +252,7 @@ export async function translatedPDF(
       byPage.set(block.page, pageBlocks);
     }
     let translated = 0;
+    const translatedBlocks: TranslatedBlockRecord[] = [];
     for (let number = 1; number <= input.numPages; number++) {
       signal?.throwIfAborted();
       onProgress?.({ phase: "pages", done: number - 1, total: input.numPages });
@@ -420,11 +441,11 @@ export async function translatedPDF(
             height: mask.height,
             color: rgb(1, 1, 1),
           });
-          layout.lines.forEach((line, lineIndex) => {
-            const centered =
-              (block.label === "doc_title" ||
-                block.label === "paragraph_title") &&
-              Math.abs(box.x + box.width / 2 - width / 2) < width * 0.05;
+          const centered =
+            (block.label === "doc_title" ||
+              block.label === "paragraph_title") &&
+            Math.abs(box.x + box.width / 2 - width / 2) < width * 0.05;
+          const lineRecords = layout.lines.map((line, lineIndex) => {
             const x =
               box.x +
               (centered
@@ -440,9 +461,34 @@ export async function translatedPDF(
                 lineIndex * layout.lineHeight,
               layout.size,
             );
+            return {
+              text: line,
+              x,
+              baselineY:
+                box.y +
+                layout.size * content.ascent +
+                lineIndex * layout.lineHeight,
+              size: layout.size,
+              lineHeight: layout.lineHeight,
+              ascent: content.ascent,
+              descent: content.descent,
+              measurePrefix: (endIndex: number) =>
+                content.measure(line.slice(0, endIndex), layout.size),
+            };
           });
           pdfPage.pushOperators(popGraphicsState());
           removeCoveredLinks(pdfPage, page, mask);
+          translatedBlocks.push({
+            page: number,
+            pageWidth: width,
+            pageHeight: height,
+            block,
+            box,
+            mask,
+            translation,
+            text: content.text,
+            lines: lineRecords,
+          });
           translated++;
         }
       } finally {
@@ -467,9 +513,33 @@ export async function translatedPDF(
     });
     failureReason = "save";
     output.setProducer("NeoRead");
-    const bytes = await output.save({ objectsPerTick: 30 });
+    const rawBytes = await output.save({ objectsPerTick: 30 });
     signal?.throwIfAborted();
-    return { bytes, translated, pages: input.numPages, issues };
+    const annotated = await applyTranslatedPDFAnnotations({
+      getDocument,
+      source,
+      sourcePDF: input,
+      bytes: rawBytes,
+      blocks,
+      translations,
+      translatedBlocks,
+      annotations,
+      answers,
+      navigation,
+      signal,
+    });
+    signal?.throwIfAborted();
+    return {
+      bytes: annotated.bytes,
+      translated,
+      pages: input.numPages,
+      issues,
+      annotationsExported: annotated.exported,
+      annotationsSkipped: annotated.skipped,
+      ...(annotated.navigationExported !== undefined
+        ? { navigationExported: annotated.navigationExported }
+        : {}),
+    };
   } catch (error) {
     failed = true;
     throw exportFailure(error, failureReason);

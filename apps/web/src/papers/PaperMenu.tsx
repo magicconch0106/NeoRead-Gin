@@ -48,6 +48,7 @@ import {
 } from "./actions";
 import { paperLink } from "./format";
 import { exportAnnotatedPDFWithToast } from "../annotated-pdf-export";
+import { exportTranslatedPDFWithToast } from "../translated-pdf-export";
 import { reparseDocument } from "../reparse-document";
 import { CitationMenuItems } from "./CitationMenu";
 import {
@@ -270,10 +271,16 @@ export function PaperMenuItems({
             </K.Item>
           )}
           {one.type === "pdf" && (
-            <K.Item onClick={() => void exportAnnotatedPDFWithToast(one)}>
-              <FileDown />
-              导出带批注的 PDF
-            </K.Item>
+            <>
+              <K.Item onClick={() => void exportAnnotatedPDFWithToast(one)}>
+                <FileDown />
+                导出带批注的 PDF
+              </K.Item>
+              <K.Item onClick={() => void exportTranslatedPDFWithToast(one)}>
+                <FileDown />
+                导出带批注的译文 PDF
+              </K.Item>
+            </>
           )}
           <K.Item onClick={() => actions.move(one)}>
             <ArrowRightLeft />

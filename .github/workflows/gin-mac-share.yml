@@ -1,27 +1,131 @@
-name: Build Gin for Apple Silicon
-run-name: Mac sharing build · ${{ inputs.source-ref }}
+name: Build Gin Installers (Mac & Windows)
+run-name: Gin installers · ${{ inputs.source-ref || github.ref_name }}
 
 on:
+  push:
+    tags:
+      - "v*-gin.*"
   workflow_dispatch:
     inputs:
       source-ref:
-        description: "Existing Gin version to package for Apple Silicon"
+        description: "Gin tag or branch to package"
         required: true
-        default: "v0.10.1-gin.3"
+        default: "v0.10.1-gin.4"
         type: string
+      mac-only:
+        description: "Build Apple Silicon macOS installer only"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
-  group: gin-mac-share-${{ inputs.source-ref }}
+  group: gin-installers-${{ inputs.source-ref || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source-ref || github.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - name: Validate versions and pin source commit
+        id: source
+        run: node scripts/release-source.mjs
+      - name: Read package version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./apps/desktop/package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
   desktop:
+    needs: prepare
     uses: ./.github/workflows/build.yml
     with:
-      ref: ${{ inputs.source-ref }}
-      # Personal sharing builds use ad-hoc signing; no upstream certificate.
+      ref: ${{ needs.prepare.outputs.sha }}
+      # Personal sharing builds use ad-hoc signing; no upstream certificate required.
       release-tag: ""
-      mac-only: true
+      mac-only: ${{ inputs.mac-only == true }}
+
+  publish:
+    needs: [prepare, desktop]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      MAC_ONLY: ${{ inputs.mac-only == true && 'true' || 'false' }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      SOURCE_SHA: ${{ needs.prepare.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: neoread-*
+          path: release
+          merge-multiple: true
+      - name: Verify complete installer set and generate checksums
+        run: node scripts/release-assets.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: neoread-checksums
+          path: release/SHA256SUMS.txt
+      - name: Publish or update GitHub Release with installers
+        if: github.event_name == 'push' || startsWith(inputs.source-ref, 'v')
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const v = process.env.VERSION;
+            const lines = [
+              `## NeoRead ${v}（Gin 个人版）`,
+              "",
+              "### 本次更新重点",
+              "- **译文 PDF 导出保留双向批注与目录书签**：按原论文版面导出译文 PDF 时，自动写入译文侧与原文侧的高亮、下划线、笔记、问题与 AI 回答及目录书签，兼容 macOS 预览、Acrobat、Zotero、Edge/Chrome。",
+              "- **三处快捷导出入口**：阅读界面右上角顶栏新增「导出」按钮；阅读器笔记栏「导出 → 导出译文 PDF」；论文库与图书库右键菜单新增「导出带批注的译文 PDF」。",
+              "",
+              "---",
+              "",
+              "### 安装包说明（新安装 & 旧版更新通用）",
+              "",
+              "| 平台 | 安装包文件 | 说明 |",
+              "| :--- | :--- | :--- |",
+              `| **macOS（Apple Silicon M 系列）** | \`NeoRead-${v}-mac-arm64.dmg\` | 新装与覆盖升级通用 |`,
+              `| **Windows（64 位 x64）** | \`NeoRead-${v}-win-x64.exe\` | 新装与覆盖升级通用 |`,
+              "",
+              "#### 1. 之前安装过旧版的用户（更新升级，数据 100% 保留）",
+              "- **切勿删除书库或配置目录**，也无需先卸载旧版；所有文献、已保存译文、高亮批注、论文笔记、AI 对话、API 与代理配置均自动继承。",
+              "- **macOS 升级**：先完全退出正在运行的 NeoRead → 打开 `.dmg` → 将 `NeoRead.app` 拖入 `Applications`（应用程序）并点击 **「替换」**（若曾手动将旧版改名为 `NeoReader.app`，请删除旧副本保留新 `NeoRead.app`）→ 若首次打开提示“未验证开发者”，前往 **系统设置 → 隐私与安全性 → 仍要打开**（或终端运行 `xattr -cr /Applications/NeoRead.app`）。",
+              "- **Windows 升级**：先完全退出正在运行的 NeoRead → 直接双击运行 `.exe` 安装包 → 保持原安装路径完成覆盖安装即可。",
+              "",
+              "#### 2. 从未安装过的新用户（首次安装）",
+              "- **macOS 新装**：双击打开 `.dmg` → 将 `NeoRead.app` 拖入 `Applications` → 首次启动若遇系统安全提示，在 **系统设置 → 隐私与安全性** 点击 **仍要打开** → 启动后自动创建本地书库并开启新手引导。",
+              "- **Windows 新装**：双击运行 `.exe`（若遇 SmartScreen 提示，点击 **更多信息 → 仍要运行**）→ 选择安装位置完成安装 → 自动创建桌面/开始菜单快捷方式并注册 PDF/EPUB 打开方式。",
+            ];
+            fs.writeFileSync("release-notes.md", lines.join("\n") + "\n");
+          '
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "NeoRead ${VERSION}" --notes-file release-notes.md --prerelease
+          else
+            gh release create "$TAG" --target "$SOURCE_SHA" --title "NeoRead ${VERSION}" --notes-file release-notes.md --prerelease
+          fi
+          RELEASE_TAG="$TAG" node scripts/release-assets.mjs --upload

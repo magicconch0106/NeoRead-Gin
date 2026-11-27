@@ -32,6 +32,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronDown,
+  Download,
   ListTree,
   Search,
   BookmarkPlus,
@@ -1345,6 +1346,14 @@ export function Workspace({
               </div>
             </PopoverContent>
           </Popover>
+          <IconButton
+            label="导出"
+            active={exportingNotes}
+            expanded={exportingNotes}
+            onClick={() => setExportingNotes(true)}
+          >
+            <Download />
+          </IconButton>
           <IconButton
             label="Agent 与批注"
             active={right}

@@ -317,7 +317,7 @@ export function ExportDocumentDialog({
           <div className="space-y-3 border-t pt-4">
             <div className="flex items-center gap-3">
               <p className="flex-1 text-xs leading-5 text-muted-foreground">
-                按原版面导出已保存的译文。图表、公式和无法排入的段落保留原文。
+                按原版面导出已保存的译文，并保留批注、划线、问答与书签。图表、公式和无法排入的段落保留原文。
               </p>
               <Button
                 variant="outline"
@@ -353,7 +353,14 @@ export function ExportDocumentDialog({
               <div className="space-y-1 text-xs leading-5 text-muted-foreground">
                 <p role="status">
                   已生成 {pdfResult.pages} 页 PDF，写入 {pdfResult.translated}{" "}
-                  个译文段落。
+                  个译文段落
+                  {pdfResult.annotationsExported
+                    ? `，保留 ${pdfResult.annotationsExported} 条批注`
+                    : ""}
+                  {pdfResult.annotationsSkipped
+                    ? `（${pdfResult.annotationsSkipped} 条无法定位未写入）`
+                    : ""}
+                  。
                 </p>
                 {pdfResult.issues.length > 0 && (
                   <details>
