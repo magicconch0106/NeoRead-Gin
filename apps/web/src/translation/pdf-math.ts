@@ -14,7 +14,7 @@ import {
   type PDFPage,
 } from "pdf-lib";
 import { cubicGlyphPath } from "./pdf-svg-path";
-import { exportText } from "./pdf-content";
+import { exportFlowText, exportText } from "./pdf-content";
 import type { embedExportFonts } from "./pdf-fonts";
 
 type Fonts = Awaited<ReturnType<typeof embedExportFonts>>;
@@ -24,7 +24,7 @@ type Shape = {
   rect?: [number, number, number, number];
   transforms: Matrix[];
 };
-type Formula = {
+export type Formula = {
   width: number;
   ascent: number;
   descent: number;
@@ -65,13 +65,12 @@ function transforms(value: string): Matrix[] {
   return result;
 }
 
-export function compileFormula(tex: string): Formula {
-  if (!tex.trim() || tex.length > 4096)
-    throw new Error("Invalid inline formula");
+export function compileFormula(tex: string, display = false): Formula {
+  if (!tex.trim() || tex.length > 4096) throw new Error("Invalid formula");
   // Some saved JSON translations decoded the start of \frac as JSON's \f.
   // Repair this unambiguous command spelling only; never rewrite stored text.
   const normalized = tex.replace(/\u000crac(?=\s*\{)/g, String.raw`\frac`);
-  const container = mathDocument.convert(normalized, { display: false });
+  const container = mathDocument.convert(normalized, { display });
   const svg = adaptor.firstChild(container) as LiteElement;
   const viewBox = adaptor
     .getAttribute(svg, "viewBox")
@@ -128,12 +127,13 @@ export function compileFormula(tex: string): Formula {
   };
 }
 
-function drawFormula(
+export function drawFormula(
   page: PDFPage,
   formula: Formula,
   x: number,
   y: number,
   size: number,
+  color = rgb(0, 0, 0),
 ) {
   for (const shape of formula.shapes) {
     page.pushOperators(
@@ -145,10 +145,10 @@ function drawFormula(
     if (shape.path) {
       // drawSvgPath applies its own downward-Y transform; cancel it here.
       page.pushOperators(concatTransformationMatrix(1, 0, 0, -1, 0, 0));
-      page.drawSvgPath(shape.path, { color: rgb(0, 0, 0) });
+      page.drawSvgPath(shape.path, { color });
     } else if (shape.rect) {
       const [rx, ry, width, height] = shape.rect;
-      page.drawRectangle({ x: rx, y: ry, width, height, color: rgb(0, 0, 0) });
+      page.drawRectangle({ x: rx, y: ry, width, height, color });
     }
     page.pushOperators(popGraphicsState());
   }
@@ -209,6 +209,98 @@ export function preparePDFText(markdown: string, fonts: Fonts) {
             });
             x += run.font.widthOfTextAtSize(run.text, size);
           }
+      }
+    },
+  };
+}
+
+/**
+ * Resilient flow text preparation for single-column translated PDFs:
+ * compiles inline and display TeX where valid, falls back gracefully to plain
+ * text on malformed TeX, and sanitizes unsupported glyphs instead of dropping
+ * translated paragraphs.
+ */
+export function prepareFlowPDFText(markdown: string, fonts: Fonts) {
+  const formulas = new Map<string, Formula>();
+  let marker = 0xe000;
+  const raw = exportFlowText(markdown, (tex, display) => {
+    while (markdown.includes(String.fromCharCode(marker))) marker++;
+    if (marker > 0xf8ff) return tex.trim();
+    try {
+      const compiled = compileFormula(tex, display);
+      const key = String.fromCharCode(marker++);
+      formulas.set(key, compiled);
+      return key;
+    } catch {
+      return tex.trim();
+    }
+  });
+  let text = "";
+  for (const ch of raw) {
+    if (formulas.has(ch)) text += ch;
+    else text += fonts.sanitize(ch);
+  }
+  text = text.trim();
+  if (!text) return null;
+  function parts(line: string) {
+    const result: { text: string; formula?: Formula }[] = [];
+    for (const char of line) {
+      const formula = formulas.get(char);
+      const last = result.at(-1);
+      if (!formula && last && !last.formula) last.text += char;
+      else result.push({ text: char, formula });
+    }
+    return result;
+  }
+  return {
+    text,
+    ascent: Math.max(1, ...[...formulas.values()].map((f) => f.ascent)),
+    descent: Math.max(0.25, ...[...formulas.values()].map((f) => f.descent)),
+    lineMetrics(line: string) {
+      let ascent = 0.92;
+      let descent = 0.24;
+      for (const p of parts(line)) {
+        if (p.formula) {
+          ascent = Math.max(ascent, p.formula.ascent);
+          descent = Math.max(descent, p.formula.descent);
+        }
+      }
+      return { ascent, descent };
+    },
+    measure: (line: string, size: number) =>
+      parts(line).reduce(
+        (width, p) =>
+          width +
+          (p.formula ? p.formula.width * size : fonts.measure(p.text, size)),
+        0,
+      ),
+    draw(
+      page: PDFPage,
+      line: string,
+      x: number,
+      y: number,
+      size: number,
+      color = rgb(0, 0, 0),
+    ) {
+      for (const part of parts(line)) {
+        if (part.formula) {
+          drawFormula(page, part.formula, x, y, size, color);
+          x += part.formula.width * size;
+        } else {
+          const runs =
+            fonts.runs(part.text) ?? fonts.runs(fonts.sanitize(part.text));
+          if (!runs) continue;
+          for (const run of runs) {
+            page.drawText(run.text, {
+              x,
+              y,
+              size,
+              font: run.font,
+              color,
+            });
+            x += run.font.widthOfTextAtSize(run.text, size);
+          }
+        }
       }
     },
   };

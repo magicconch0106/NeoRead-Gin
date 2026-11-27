@@ -47,8 +47,45 @@ export async function embedExportFonts(
     return result;
   }
   const widthCache = new Map<string, number>();
+  const fallbackChar = ["□", "?", " "].find((c) => faceFor(c) !== null) ?? " ";
+  const charReplacements: Record<string, string> = {
+    "\u00a0": " ",
+    "\u2002": " ",
+    "\u2003": " ",
+    "\u2009": " ",
+    "\u200a": " ",
+    "\u202f": " ",
+    "\u205f": " ",
+    "\u2010": "-",
+    "\u2011": "-",
+    "\u2012": "-",
+    "\u2212": "-",
+    "\u2217": "*",
+    "\u22c6": "*",
+    "\u204e": "*",
+    "\u2032": "'",
+    "\u2033": '"',
+    "\u22ef": "...",
+    "\u22ee": ":",
+  };
+  function sanitize(text: string): string {
+    let out = "";
+    for (const char of text) {
+      if (char === "\n") {
+        out += "\n";
+        continue;
+      }
+      if (/[\u200b-\u200f\ufeff\ufe00-\ufe0f\u00ad]/u.test(char)) continue;
+      const mapped = charReplacements[char] ?? char;
+      for (const ch of mapped) {
+        out += faceFor(ch) ? ch : fallbackChar;
+      }
+    }
+    return out;
+  }
   return {
     runs,
+    sanitize,
     supports: (text: string) => runs(text.replaceAll("\n", "")) !== null,
     measure: (text: string, size: number) => {
       let width = widthCache.get(text);

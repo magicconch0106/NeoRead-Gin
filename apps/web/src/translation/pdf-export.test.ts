@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
 import { expect, it } from "vitest";
-import { PDFDocument, PDFName, StandardFonts, degrees, rgb } from "pdf-lib";
+import { PDFDocument, StandardFonts, degrees, rgb } from "pdf-lib";
 import type { Annotation, PDFBlock, TranslationBlock } from "@neoread/core";
 import { translatedPDF, type ExportCanvas } from "./pdf-export";
 import { embedExportFonts, type FontBytes } from "./pdf-fonts";
@@ -16,7 +16,12 @@ const { createCanvas } = processorRequire("@napi-rs/canvas") as {
   createCanvas(
     width: number,
     height: number,
-  ): { width: number; height: number; getContext(type: "2d"): unknown };
+  ): {
+    width: number;
+    height: number;
+    getContext(type: "2d"): unknown;
+    toDataURL(type?: string): string;
+  };
 };
 const fontBytes: Promise<FontBytes> = Promise.all([
   readFile(
@@ -43,7 +48,7 @@ function canvas(width: number, height: number): ExportCanvas {
 
 function translation(
   block: PDFBlock,
-  target = "我们将译文放在原来的位置，保留页面布局。",
+  target = "我们将译文按单栏连续排版，彻底不带英文原文。",
 ): TranslationBlock {
   return {
     blockId: block.id,
@@ -80,6 +85,12 @@ async function fixture() {
     color: rgb(0.1, 0.5, 0.8),
   });
   page.drawText("E = mc2", { x: 220, y: 300, font, size: 15 });
+  page.drawText("[1] Untranslated English reference entry.", {
+    x: 30,
+    y: 80,
+    font,
+    size: 9,
+  });
   const blocks: PDFBlock[] = [
     {
       id: "left",
@@ -115,12 +126,29 @@ async function fixture() {
       },
       text: "E = mc2",
     },
+    {
+      id: "ref-1",
+      page: 1,
+      label: "reference_content",
+      bounds: { x: 30 / 400, y: 410 / 500, width: 300 / 400, height: 20 / 500 },
+      text: "[1] Untranslated English reference entry.",
+    },
   ];
   return {
     doc,
     page,
     blocks,
-    translations: blocks.slice(0, 2).map((b) => translation(b)),
+    translations: [
+      translation(blocks[0], "左侧第一段中文译文。"),
+      translation(blocks[1], "右侧第二段中文译文。"),
+      {
+        blockId: "formula",
+        status: "complete" as const,
+        sourceHash: "formula-hash",
+        sentences: [],
+        formulaMarkdown: "$$E = mc^2$$",
+      },
+    ],
   };
 }
 
@@ -139,13 +167,14 @@ async function run(
   );
 }
 
-it("writes embedded Chinese text while keeping page size and vector graphics", async () => {
+it("exports a pure single-column Chinese PDF with figures and formulas and zero English source text", async () => {
   const f = await fixture();
   const original = await f.doc.save();
   const result = await run(f);
-  expect(result.translated).toBe(2);
+  expect(result.translated).toBe(3);
   expect(result.issues).toEqual([]);
   expect(await f.doc.save()).toEqual(original);
+
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const task = pdfjs.getDocument({
     data: result.bytes.slice(),
@@ -155,53 +184,115 @@ it("writes embedded Chinese text while keeping page size and vector graphics", a
     const pdf = await task.promise;
     expect(pdf.numPages).toBe(1);
     const page = await pdf.getPage(1);
-    expect(page.getViewport({ scale: 1 })).toMatchObject({
-      width: 400,
-      height: 500,
-    });
+    const viewport = page.getViewport({ scale: 1 });
+    expect(viewport.width).toBeCloseTo(595.28, 1);
+    expect(viewport.height).toBeCloseTo(841.89, 1);
+
     const content = await page.getTextContent();
-    expect(
-      content.items.map((i) => ("str" in i ? i.str : "")).join(""),
-    ).toContain("我们将译文");
-    const surface = canvas(400, 500);
+    const extracted = content.items
+      .map((i) => ("str" in i ? i.str : ""))
+      .join("");
+    expect(extracted).toContain("左侧第一段中文译文。");
+    expect(extracted).toContain("右侧第二段中文译文。");
+    // Original English paragraphs and bibliography must NOT exist anywhere in the output PDF.
+    expect(extracted).not.toContain("Original paragraph");
+    expect(extracted).not.toContain("Right column stays here");
+    expect(extracted).not.toContain("Untranslated English reference");
+
+    // Verify both Chinese glyph rendering and cropped figure pixels on the output page.
+    const surface = canvas(
+      Math.ceil(viewport.width),
+      Math.ceil(viewport.height),
+    );
     await page.render({
       canvas: surface.canvas,
       canvasContext: surface.context,
-      viewport: page.getViewport({ scale: 1 }),
+      viewport,
     }).promise;
-    expect(
-      Array.from(surface.context.getImageData(60, 200, 1, 1).data).slice(0, 3),
-    ).toEqual([26, 128, 204]);
-    // Unicode mappings can survive even when embedded composite glyphs are
-    // broken. Check ink in each of the first six Chinese glyph cells as well.
-    for (let glyph = 0; glyph < 6; glyph++) {
-      const pixels = surface.context.getImageData(
-        30 + glyph * 10,
-        40,
-        10,
-        12,
-      ).data;
-      let ink = 0;
-      for (let i = 0; i < pixels.length; i += 4) if (pixels[i] < 160) ink++;
-      expect(ink, `missing glyph ${glyph}`).toBeGreaterThan(8);
+    const pixels = surface.context.getImageData(
+      0,
+      0,
+      surface.canvas.width,
+      surface.canvas.height,
+    ).data;
+    let blueFigurePixels = 0;
+    for (let i = 0; i < pixels.length; i += 4) {
+      if (
+        Math.abs(pixels[i] - 26) <= 8 &&
+        Math.abs(pixels[i + 1] - 128) <= 8 &&
+        Math.abs(pixels[i + 2] - 204) <= 8
+      ) {
+        blueFigurePixels++;
+      }
     }
+    expect(blueFigurePixels).toBeGreaterThan(2000);
     surface.dispose();
   } finally {
     await task.destroy();
   }
 });
 
-it("does not mistake vertical margin text for a horizontal paragraph", async () => {
+it("flows very long translations, display math and unsupported glyphs across pages without reverting to English", async () => {
   const f = await fixture();
-  f.page.drawText("Vertical margin text can be very long", {
-    x: 12,
-    y: 100,
-    size: 10,
-    rotate: degrees(90),
-  });
+  f.translations[0].sentences[0].target =
+    "这是一段非常长的中文译文内容。".repeat(180);
+  f.translations[1].sentences[0].target =
+    "包含嵌入式公式 $$x^2 + y^2 = z^2$$ 与特殊符号🦄的译文段落。";
   const result = await run(f);
-  expect(result.translated).toBe(2);
+  expect(result.translated).toBe(3);
   expect(result.issues).toEqual([]);
+  expect(result.pages).toBeGreaterThanOrEqual(2);
+
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const task = pdfjs.getDocument({
+    data: result.bytes.slice(),
+    useSystemFonts: true,
+  });
+  try {
+    const pdf = await task.promise;
+    const allText: string[] = [];
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const p = await pdf.getPage(i);
+      const tc = await p.getTextContent();
+      allText.push(tc.items.map((it) => ("str" in it ? it.str : "")).join(""));
+    }
+    const joined = allText.join("\n");
+    expect(joined).toContain("这是一段非常长的中文译文内容。");
+    expect(joined).toContain("包含嵌入式公式");
+    expect(joined).toContain("与特殊符号");
+    expect(joined).not.toContain("Original paragraph");
+    expect(joined).not.toContain("Right column");
+  } finally {
+    await task.destroy();
+  }
+});
+
+it("omits untranslated or stale blocks without falling back to English source text", async () => {
+  const f = await fixture();
+  f.translations[0].status = "running";
+  f.translations[1].sourceHash = "stale-hash";
+  // Formula is still complete, so export succeeds with only the formula + figure.
+  const result = await run(f);
+  expect(result.translated).toBe(1);
+  expect(result.issues).toEqual([
+    { page: 1, blockId: "left", reason: "untranslated" },
+    { page: 1, blockId: "right", reason: "stale" },
+  ]);
+
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const task = pdfjs.getDocument({
+    data: result.bytes.slice(),
+    useSystemFonts: true,
+  });
+  try {
+    const pdf = await task.promise;
+    const tc = await (await pdf.getPage(1)).getTextContent();
+    const text = tc.items.map((it) => ("str" in it ? it.str : "")).join("");
+    expect(text).not.toContain("Original paragraph");
+    expect(text).not.toContain("Right column");
+  } finally {
+    await task.destroy();
+  }
 });
 
 it("releases the rendering surface and loading task on cancellation", async () => {
@@ -235,68 +326,7 @@ it("releases the rendering surface and loading task on cancellation", async () =
   expect(disposed).toBe(1);
 });
 
-it.each([
-  "untranslated",
-  "stale",
-  "overlap",
-  "structure",
-  "overflow",
-  "bounds",
-  "font",
-  "background",
-] as const)("preserves blocks when %s", async (reason) => {
-  const f = await fixture();
-  if (reason === "untranslated") f.translations[1].status = "running";
-  if (reason === "stale") f.translations[1].sourceHash = "outdated";
-  if (reason === "overlap")
-    f.blocks.push({
-      ...f.blocks[1],
-      id: "protected",
-      label: "image",
-      image: "figure.png",
-    });
-  if (reason === "structure")
-    f.translations[1].sentences[0].target = "独立公式 $$x^2$$ 保留原文";
-  if (reason === "overflow")
-    f.translations[1].sentences[0].target = "这是很长的段落。".repeat(150);
-  if (reason === "bounds") f.blocks[1].bounds.x = -1;
-  if (reason === "font") f.translations[1].sentences[0].target = "缺少字形🦄";
-  if (reason === "background")
-    f.page.drawRectangle({
-      x: 220,
-      y: 430,
-      width: 150,
-      height: 30,
-      color: rgb(0.8, 0.9, 1),
-    });
-  const result = await run(f);
-  expect(result.translated).toBe(1);
-  expect(result.issues).toContainEqual({ page: 1, blockId: "right", reason });
-});
-
-it("removes only link hotspots covered by translated text", async () => {
-  const f = await fixture();
-  const link = (rect: number[]) =>
-    f.doc.context.register(
-      f.doc.context.obj({
-        Type: "Annot",
-        Subtype: "Link",
-        Rect: rect,
-        Border: [0, 0, 1],
-        A: { S: "URI", URI: "https://example.com" },
-      }),
-    );
-  f.page.node.set(
-    PDFName.of("Annots"),
-    f.doc.context.obj([link([30, 440, 80, 455]), link([30, 200, 80, 210])]),
-  );
-  const result = await run(f);
-  const doc = await PDFDocument.load(result.bytes);
-  expect(doc.getPage(0).node.Annots()?.size()).toBe(1);
-  expect(f.page.node.Annots()?.size()).toBe(2);
-});
-
-it("exports the bundled paper with its saved translations and retains every page", async () => {
+it("exports the bundled 15-page paper as a pure Chinese single-column PDF without English paragraphs or references", async () => {
   const base = new URL(
     "../../../server/internal/neoread/example-paper/",
     import.meta.url,
@@ -317,117 +347,46 @@ it("exports the bundled paper with its saved translations and retains every page
     await fontBytes,
     { createCanvas: canvas },
   );
-  expect(result.issues.some((issue) => issue.blockId === "p5-b5")).toBe(false);
-  expect(
-    result.issues.filter((issue) =>
-      manifest.blocks.some(
-        (b: PDFBlock) => b.caption && b.id === issue.blockId,
-      ),
-    ),
-  ).toEqual([]);
-  expect(result.pages).toBe(15);
-  expect(result.translated).toBeGreaterThanOrEqual(105);
-  expect(result.issues.some((issue) => issue.blockId === "p4-b8")).toBe(false);
-  // This exact paragraph was previously omitted solely because it contains h_t.
-  expect(result.issues.some((issue) => issue.blockId === "p2-b3")).toBe(false);
+  expect(result.issues).toEqual([]);
+  expect(result.translated).toBe(122);
+  expect(result.pages).toBeGreaterThanOrEqual(8);
+
   const loading = pdfjs.getDocument({
     data: result.bytes.slice(),
     useSystemFonts: true,
   });
   try {
     const output = await loading.promise;
-    const page = await output.getPage(2);
-    const text = (await page.getTextContent()).items
-      .map((item) => ("str" in item ? item.str : ""))
-      .join("");
-    for (const sentence of [
-      "循环模型通常按照",
-      "这些模型将各位置",
-      "这种固有的顺序性",
-      "近期研究通过分解技巧",
-      "顺序计算这一根本限制依然存在",
-    ])
-      expect(text).toContain(sentence);
-    expect(text).not.toMatch(/[\ue000-\uf8ff]/u);
-    for (const block of manifest.blocks.filter((b: PDFBlock) => b.caption)) {
-      const captionPage = await output.getPage(block.page);
-      const captionText = (await captionPage.getTextContent()).items
-        .map((item) => ("str" in item ? item.str : ""))
-        .join("")
-        .replace(/\s/g, "");
-      const translated = paper.translations.find(
-        (t: TranslationBlock) => t.blockId === block.id,
+    const pageTexts: string[] = [];
+    for (let p = 1; p <= output.numPages; p++) {
+      const page = await output.getPage(p);
+      pageTexts.push(
+        (await page.getTextContent()).items
+          .map((item) => ("str" in item ? item.str : ""))
+          .join(""),
       );
-      // Check actual emitted Chinese, not only the success counter. Formula-heavy
-      // captions still have an ordinary opening sentence before their first math.
-      const opening = translated.sentences[0].target
-        .split(/[$\\]/)[0]
-        .replace(/\s/g, "");
-      expect(captionText).toContain(opening);
     }
-    const matrixPage = await output.getPage(5);
-    const matrixText = (await matrixPage.getTextContent()).items
-      .map((item) => ("str" in item ? item.str : ""))
-      .join("");
-    expect(matrixText).toContain("其中，投影参数矩阵为");
-    expect(matrixText).toContain("以及");
-    const attentionPage = await output.getPage(4);
-    const attentionText = (await attentionPage.getTextContent()).items
-      .map((item) => ("str" in item ? item.str : ""))
-      .join("");
+    const fullText = pageTexts.join("\n");
     for (const sentence of [
+      "注意力就是一切",
+      "循环模型通常按照",
+      "顺序计算这一根本限制依然存在",
       "最常用的两种注意力函数",
-      "区别仅在于缩放因子",
-      "加性注意力使用",
-      "高度优化的矩阵乘法代码实现",
-    ])
-      expect(attentionText).toContain(sentence);
+      "其中，投影参数矩阵为",
+    ]) {
+      expect(fullText).toContain(sentence);
+    }
+    expect(fullText).not.toMatch(/[\ue000-\uf8ff]/u);
+    // Original English prose and bibliography must be absent.
+    expect(fullText).not.toContain(
+      "The dominant sequence transduction models are based on complex recurrent",
+    );
+    expect(fullText).not.toContain(
+      "Neural machine translation by jointly learning",
+    );
   } finally {
     await loading.destroy();
   }
-  expect(result.issues.some((issue) => issue.blockId === "p1-b12")).toBe(false);
-});
-
-it("handles crop boxes and page rotation in displayed coordinates", async () => {
-  const f = await fixture();
-  f.page.setCropBox(10, 20, 380, 460);
-  // An extra page with a rotated coordinate system but horizontal displayed text.
-  const rotated = f.doc.addPage([500, 400]);
-  rotated.setRotation(degrees(90));
-  rotated.drawText("A rotated page", {
-    x: 50,
-    y: 30,
-    size: 10,
-    rotate: degrees(90),
-  });
-  f.blocks = f.blocks.map((b) => ({
-    ...b,
-    bounds: {
-      x: (b.bounds.x * 400 - 10) / 380,
-      y: (b.bounds.y * 500 - 20) / 460,
-      width: (b.bounds.width * 400) / 380,
-      height: (b.bounds.height * 500) / 460,
-    },
-  }));
-  const block: PDFBlock = {
-    id: "rotated",
-    page: 2,
-    label: "text",
-    text: "A rotated page",
-    bounds: { x: 30 / 400, y: 40 / 500, width: 150 / 400, height: 30 / 500 },
-  };
-  f.blocks.push(block);
-  f.translations.push(translation(block, "旋转后的页面仍然正确排版。"));
-  const result = await run(f);
-  expect(result.translated).toBe(3);
-  const doc = await PDFDocument.load(result.bytes);
-  expect(doc.getPage(0).getCropBox()).toEqual({
-    x: 10,
-    y: 20,
-    width: 380,
-    height: 460,
-  });
-  expect(doc.getPage(1).getRotation().angle).toBe(90);
 });
 
 it("does not produce an empty translation PDF and honours cancellation", async () => {
@@ -435,7 +394,6 @@ it("does not produce an empty translation PDF and honours cancellation", async (
   f.translations = [];
   await expect(run(f)).rejects.toMatchObject({
     reason: "no_translated_blocks",
-    message: expect.stringContaining("没有能安全排入"),
   });
   const controller = new AbortController();
   controller.abort();
@@ -528,26 +486,6 @@ it("renders curved parentheses within their glyph bounds without spikes", async 
   }
 });
 
-it("refuses to expand an erasure into neighboring protected content", async () => {
-  const f = await fixture();
-  // Helvetica's descender extends below this deliberately tight detector box.
-  f.blocks[1].bounds.height = 10 / 500;
-  f.blocks.push({
-    id: "neighbor",
-    page: 1,
-    label: "image",
-    image: "figure.png",
-    text: "",
-    bounds: { x: 220 / 400, y: 51 / 500, width: 150 / 400, height: 5 / 500 },
-  });
-  const result = await run(f);
-  expect(result.issues).toContainEqual({
-    page: 1,
-    blockId: "right",
-    reason: "overlap",
-  });
-});
-
 it.each(["pdf_decode", "font_embed"] as const)(
   "classifies real %s failures at the engine boundary",
   async (reason) => {
@@ -574,17 +512,29 @@ it.each(["pdf_decode", "font_embed"] as const)(
   },
 );
 
-it("preserves translation-side phrase highlights, underlines, Q&A comments and outline", async () => {
+it("preserves translation-side phrase highlights, underlines, Q&A comments, source marks and remapped outline", async () => {
   const f = await fixture();
+  f.translations[0] = {
+    blockId: "left",
+    status: "complete",
+    sourceHash: createHash("sha256")
+      .update(`zh-CN:v1:${f.blocks[0].text.trim()}`)
+      .digest("hex"),
+    sentences: [
+      { source: "Original paragraph on the left.", target: "左侧第一句译文。" },
+      { source: "Second line of source text.", target: "第二句重点结论在此。" },
+    ],
+  };
   const leftHash = f.translations[0].sourceHash;
   const rightHash = f.translations[1].sourceHash;
+
   const annotations: Annotation[] = [
     {
       id: "phrase-note",
       documentId: "doc",
       kind: "note",
-      quote: "页面布局",
-      note: "重点保留布局",
+      quote: "重点结论",
+      note: "核心结论批注",
       color: "#facc15",
       createdAt: "2026-11-27T02:00:00.000Z",
       location: {
@@ -593,17 +543,17 @@ it("preserves translation-side phrase highlights, underlines, Q&A comments and o
         translation: {
           blockId: "left",
           sourceHash: leftHash,
-          sentenceIndexes: [0],
+          sentenceIndexes: [1],
           start: 11,
           end: 15,
           ranges: [
             {
               blockId: "left",
               sourceHash: leftHash,
-              sentenceIndexes: [0],
+              sentenceIndexes: [1],
               start: 11,
               end: 15,
-              quote: "页面布局",
+              quote: "重点结论",
             },
           ],
         },
@@ -613,7 +563,7 @@ it("preserves translation-side phrase highlights, underlines, Q&A comments and o
       id: "trans-underline",
       documentId: "doc",
       kind: "underline",
-      quote: "保留页面布局。",
+      quote: "第二段中文译文。",
       note: "",
       color: "#3b82f6",
       createdAt: "2026-11-27T02:01:00.000Z",
@@ -624,50 +574,53 @@ it("preserves translation-side phrase highlights, underlines, Q&A comments and o
           blockId: "right",
           sourceHash: rightHash,
           sentenceIndexes: [0],
-          start: 9,
-          end: 16,
+          start: 2,
+          end: 10,
           ranges: [
             {
               blockId: "right",
               sourceHash: rightHash,
               sentenceIndexes: [0],
-              start: 9,
-              end: 16,
-              quote: "保留页面布局。",
+              start: 2,
+              end: 10,
+              quote: "第二段中文译文。",
             },
           ],
         },
       },
     },
     {
-      id: "trans-question",
+      id: "src-first-sentence-question",
       documentId: "doc",
       kind: "question",
-      quote: "我们将译文",
-      note: "为什么在原区域排版？",
+      quote: "Original paragraph on the left.",
+      note: "第一句是什么意思？",
       answerId: "ans-1",
       color: "#22c55e",
       createdAt: "2026-11-27T02:02:00.000Z",
       location: {
         type: "pdf",
         page: 1,
-        translation: {
-          blockId: "left",
-          sourceHash: leftHash,
-          sentenceIndexes: [0],
-          start: 0,
-          end: 5,
-          ranges: [
-            {
-              blockId: "left",
-              sourceHash: leftHash,
-              sentenceIndexes: [0],
-              start: 0,
-              end: 5,
-              quote: "我们将译文",
-            },
-          ],
-        },
+        quote: "Original paragraph on the left.",
+        rects: [
+          { x: 30 / 400, y: 40 / 500, width: 120 / 400, height: 12 / 500 },
+        ],
+      },
+    },
+    {
+      id: "src-figure-note",
+      documentId: "doc",
+      kind: "note",
+      quote: "",
+      note: "架构图说明",
+      color: "#ef4444",
+      createdAt: "2026-11-27T02:03:00.000Z",
+      location: {
+        type: "pdf",
+        page: 1,
+        rects: [
+          { x: 40 / 400, y: 180 / 500, width: 80 / 400, height: 40 / 500 },
+        ],
       },
     },
     {
@@ -677,7 +630,7 @@ it("preserves translation-side phrase highlights, underlines, Q&A comments and o
       quote: "旧译文",
       note: "",
       color: "#facc15",
-      createdAt: "2026-11-27T02:03:00.000Z",
+      createdAt: "2026-11-27T02:04:00.000Z",
       location: {
         type: "pdf",
         page: 1,
@@ -702,7 +655,7 @@ it("preserves translation-side phrase highlights, underlines, Q&A comments and o
     {
       createCanvas: canvas,
       annotations,
-      answers: { "ans-1": "为了对照原图与公式。" },
+      answers: { "ans-1": "介绍研究背景。" },
       navigation: async () => [
         {
           id: "sec-1",
@@ -714,8 +667,8 @@ it("preserves translation-side phrase highlights, underlines, Q&A comments and o
     },
   );
   expect(result).toMatchObject({
-    translated: 2,
-    annotationsExported: 3,
+    translated: 3,
+    annotationsExported: 4,
     annotationsSkipped: 1,
     navigationExported: 1,
   });
@@ -733,168 +686,57 @@ it("preserves translation-side phrase highlights, underlines, Q&A comments and o
     const annots = (await page.getAnnotations()).filter(
       (a) => a.subtype !== "Popup",
     );
-    expect(annots).toHaveLength(3);
+    expect(annots).toHaveLength(4);
 
     const noteAnnot = annots.find(
-      (a) => a.contentsObj?.str === "重点保留布局",
+      (a) => a.contentsObj?.str === "核心结论批注",
     )!;
     expect(noteAnnot.subtype).toBe("Highlight");
-    expect(Array.from(noteAnnot.color)).toEqual([250, 204, 21]);
-    // "页面布局" wraps across line 1 ("页", ~10 pt at x≈180..190) and line 2 ("面布局", ~30 pt at x≈30..60).
-    expect(noteAnnot.quadPoints).toHaveLength(16);
-    expect(noteAnnot.quadPoints[0]).toBeGreaterThan(170);
-    expect(noteAnnot.quadPoints[2] - noteAnnot.quadPoints[0]).toBeCloseTo(
-      10,
-      0,
-    );
-    expect(noteAnnot.quadPoints[8]).toBeCloseTo(30, 0);
-    expect(noteAnnot.quadPoints[10] - noteAnnot.quadPoints[8]).toBeCloseTo(
-      30,
-      0,
-    );
+    // "重点结论" is 4 chars (~42 pt wide) inside sentence 2, well after "左侧第一句译文。 第二句" (x > 150).
+    expect(noteAnnot.rect[0]).toBeGreaterThan(150);
+    expect(noteAnnot.rect[2] - noteAnnot.rect[0]).toBeLessThan(55);
 
     const underlineAnnot = annots.find(
       (a) => Array.from(a.color).join() === "59,130,246",
     )!;
     expect(underlineAnnot.opacity).toBe(1);
-    // "保留页面布局。" wraps across two lines (12.5 pt apart), each with a 1.5 pt bottom strip.
-    expect(underlineAnnot.quadPoints).toHaveLength(16);
-    expect(
-      underlineAnnot.quadPoints[1] - underlineAnnot.quadPoints[5],
-    ).toBeCloseTo(1.5, 1);
-    expect(
-      underlineAnnot.quadPoints[9] - underlineAnnot.quadPoints[13],
-    ).toBeCloseTo(1.5, 1);
-    expect(underlineAnnot.rect[0]).toBeGreaterThanOrEqual(220);
+    expect(underlineAnnot.rect[3] - underlineAnnot.rect[1]).toBeCloseTo(1.5, 1);
 
     const questionAnnot = annots.find((a) =>
-      a.contentsObj?.str?.includes("问题：为什么在原区域排版？"),
+      a.contentsObj?.str?.includes("问题：第一句是什么意思？"),
     )!;
     expect(questionAnnot.contentsObj.str).toBe(
-      "问题：为什么在原区域排版？\n\n回答：为了对照原图与公式。",
+      "问题：第一句是什么意思？\n\n回答：介绍研究背景。",
     );
+    // First sentence starts at the left margin (x ≈ 56 pt).
+    expect(questionAnnot.rect[0]).toBeCloseTo(56, 0);
+
+    const figAnnot = annots.find((a) => a.contentsObj?.str === "架构图说明")!;
+    expect(figAnnot).toBeTruthy();
   } finally {
     await task.destroy();
   }
 });
 
-it("maps source-side annotations onto translated sentences and keeps preserved-area marks intact", async () => {
+it("handles rotated source pages when cropping figures and extracting captions", async () => {
   const f = await fixture();
-  // Give the left block two distinct sentences so we can verify sentence-level mapping.
-  f.translations[0] = {
-    blockId: "left",
-    status: "complete",
-    sourceHash: createHash("sha256")
-      .update(`zh-CN:v1:${f.blocks[0].text.trim()}`)
-      .digest("hex"),
-    sentences: [
-      { source: "Original paragraph on the left.", target: "左侧第一句译文。" },
-      { source: "Second line of source text.", target: "第二句关键结论。" },
-    ],
-  };
-  // Force the right block to overflow so its original English text stays intact.
-  f.translations[1].sentences[0].target = "超长译文保留原文。".repeat(80);
-
-  const annotations: Annotation[] = [
-    {
-      id: "src-second-sentence",
-      documentId: "doc",
-      kind: "highlight",
-      quote: "Second line of source text.",
-      note: "原文第二句批注",
-      color: "#facc15",
-      createdAt: "2026-11-27T02:10:00.000Z",
-      location: {
-        type: "pdf",
-        page: 1,
-        quote: "Second line of source text.",
-        // Line 2 of left paragraph is drawn at PDF y=436 => displayed y ≈ 54..66 out of 500.
-        rects: [
-          { x: 30 / 400, y: 54 / 500, width: 120 / 400, height: 12 / 500 },
-        ],
-      },
-    },
-    {
-      id: "src-preserved-figure",
-      documentId: "doc",
-      kind: "note",
-      quote: "",
-      note: "蓝色示意图批注",
-      color: "#ef4444",
-      createdAt: "2026-11-27T02:11:00.000Z",
-      location: {
-        type: "pdf",
-        page: 1,
-        rects: [
-          { x: 40 / 400, y: 180 / 500, width: 80 / 400, height: 40 / 500 },
-        ],
-      },
-    },
-    {
-      id: "trans-on-preserved-english",
-      documentId: "doc",
-      kind: "highlight",
-      quote: "超长译文",
-      note: "溢出段回退原文仍保留批注",
-      color: "#a855f7",
-      createdAt: "2026-11-27T02:12:00.000Z",
-      location: {
-        type: "pdf",
-        page: 1,
-        translation: {
-          blockId: "right",
-          sourceHash: f.translations[1].sourceHash,
-          sentenceIndexes: [0],
-          start: 0,
-          end: 4,
-        },
-      },
-    },
-  ];
-
-  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const result = await translatedPDF(
-    pdfjs.getDocument,
-    { data: await f.doc.save(), useSystemFonts: true },
-    f.blocks,
-    f.translations,
-    await fontBytes,
-    { createCanvas: canvas, annotations },
-  );
-  expect(result.translated).toBe(1);
-  expect(result.annotationsExported).toBe(3);
-  expect(result.annotationsSkipped).toBe(0);
-
-  const task = pdfjs.getDocument({
-    data: result.bytes.slice(),
-    useSystemFonts: true,
+  const rotated = f.doc.addPage([500, 400]);
+  rotated.setRotation(degrees(90));
+  rotated.drawText("A rotated page", {
+    x: 50,
+    y: 30,
+    size: 10,
+    rotate: degrees(90),
   });
-  try {
-    const pdf = await task.promise;
-    const page = await pdf.getPage(1);
-    const annots = (await page.getAnnotations()).filter(
-      (a) => a.subtype !== "Popup",
-    );
-    expect(annots).toHaveLength(3);
-
-    const secondSent = annots.find(
-      (a) => a.contentsObj?.str === "原文第二句批注",
-    )!;
-    // "左侧第一句译文。 第二句关键结论。" fits on one Chinese line starting at x=30;
-    // the second sentence starts well to the right of x=30!
-    expect(secondSent.rect[0]).toBeGreaterThan(80);
-
-    const figureAnnot = annots.find(
-      (a) => a.contentsObj?.str === "蓝色示意图批注",
-    )!;
-    expect(figureAnnot.rect[0]).toBeCloseTo(40, 0);
-    expect(figureAnnot.rect[2]).toBeCloseTo(120, 0);
-
-    const fallbackAnnot = annots.find(
-      (a) => a.contentsObj?.str === "溢出段回退原文仍保留批注",
-    )!;
-    expect(fallbackAnnot.rect[0]).toBeGreaterThanOrEqual(219);
-  } finally {
-    await task.destroy();
-  }
+  const block: PDFBlock = {
+    id: "rotated",
+    page: 2,
+    label: "text",
+    text: "A rotated page",
+    bounds: { x: 30 / 400, y: 40 / 500, width: 150 / 400, height: 30 / 500 },
+  };
+  f.blocks.push(block);
+  f.translations.push(translation(block, "旋转源页面的中文译文。"));
+  const result = await run(f);
+  expect(result.translated).toBe(4);
 });

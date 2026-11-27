@@ -10,7 +10,7 @@ on:
       source-ref:
         description: "Gin tag or branch to package"
         required: true
-        default: "v0.10.1-gin.4"
+        default: "v0.10.1-gin.5"
         type: string
       mac-only:
         description: "Build Apple Silicon macOS installer only"
@@ -100,8 +100,8 @@ jobs:
               `## NeoRead ${v}（Gin 个人版）`,
               "",
               "### 本次更新重点",
-              "- **译文 PDF 导出保留双向批注与目录书签**：按原论文版面导出译文 PDF 时，自动写入译文侧与原文侧的高亮、下划线、笔记、问题与 AI 回答及目录书签，兼容 macOS 预览、Acrobat、Zotero、Edge/Chrome。",
-              "- **三处快捷导出入口**：阅读界面右上角顶栏新增「导出」按钮；阅读器笔记栏「导出 → 导出译文 PDF」；论文库与图书库右键菜单新增「导出带批注的译文 PDF」。",
+              "- **纯中文单栏译文 PDF 导出（含图表、公式与双向批注）**：按软件内「仅译文」视图生成干净的单栏中文 A4 PDF（包含原论文裁剪图表与矢量公式，彻底不含英文原版底页、英文回退段或英文参考文献），并自动将译文侧与原文侧的高亮、下划线、笔记、AI 问答及目录书签写入标准 PDF 批注。",
+              "- **三处快捷导出入口**：阅读界面右上角顶栏「导出」按钮；阅读器笔记栏「导出 → 导出译文 PDF」；论文库与图书库右键菜单「导出带批注的译文 PDF」。",
               "",
               "---",
               "",

@@ -22,10 +22,13 @@ import {
   type Quad,
 } from "../readers/pdf-export";
 import { writePDFOutline } from "../readers/pdf-outline-export";
-import { exportText } from "./pdf-content";
+import { exportFlowText } from "./pdf-content";
 import { overlaps, type Rect } from "./pdf-layout";
 
 export type TranslatedLineRecord = {
+  page: number;
+  pageWidth: number;
+  pageHeight: number;
   text: string;
   x: number;
   baselineY: number;
@@ -37,23 +40,37 @@ export type TranslatedLineRecord = {
 };
 
 export type TranslatedBlockRecord = {
-  page: number;
-  pageWidth: number;
-  pageHeight: number;
   block: PDFBlock;
-  box: Rect;
-  mask: Rect;
+  sourcePage: number;
+  sourceBounds: Rect;
   translation: TranslationBlock;
   text: string;
   lines: TranslatedLineRecord[];
 };
 
+export type FigurePlacementRecord = {
+  blockId: string;
+  sourcePage: number;
+  sourceBounds: Rect;
+  outPage: number;
+  outRect: Rect;
+};
+
+export type BlockAnchorRecord = {
+  blockId: string;
+  sourcePage: number;
+  sourceY: number;
+  outPage: number;
+  outY: number;
+};
+
 type TextSpan = { start: number; end: number };
+type PageRect = { page: number; rect: Rect };
 type TranslationPart = NonNullable<TranslationLocation["ranges"]>[number];
 
 type BlockLayout = TranslatedBlockRecord & {
   sentenceRanges: TextSpan[];
-  spanRects: (start: number, end: number) => Rect[];
+  spanPageRects: (start: number, end: number) => PageRect[];
 };
 
 const compact = (text: string) =>
@@ -95,7 +112,7 @@ function buildSentenceRanges(
   let cursor = 0;
   for (const sentence of translation.sentences) {
     const rendered =
-      exportText(sentence.target.trim(), () => "\ufffc") ??
+      exportFlowText(sentence.target.trim(), () => "\ufffc") ||
       sentence.target.trim();
     const needle = normalizeWithOffsets(rendered).text;
     if (!needle) {
@@ -147,9 +164,9 @@ export function buildBlockLayout(record: TranslatedBlockRecord): BlockLayout {
 
   const sentenceRanges = buildSentenceRanges(record.text, record.translation);
 
-  const spanRects = (start: number, end: number): Rect[] => {
+  const spanPageRects = (start: number, end: number): PageRect[] => {
     if (end <= start) return [];
-    const rects: Rect[] = [];
+    const results: PageRect[] = [];
     for (let lineIdx = 0; lineIdx < record.lines.length; lineIdx++) {
       const line = record.lines[lineIdx];
       const offsets = lineOffsets[lineIdx];
@@ -166,11 +183,11 @@ export function buildBlockLayout(record: TranslatedBlockRecord): BlockLayout {
       if (from < 0 || from >= to) continue;
       const x1 = Math.max(
         0,
-        Math.min(record.pageWidth, line.x + line.measurePrefix(from)),
+        Math.min(line.pageWidth, line.x + line.measurePrefix(from)),
       );
       const x2 = Math.max(
         0,
-        Math.min(record.pageWidth, line.x + line.measurePrefix(to)),
+        Math.min(line.pageWidth, line.x + line.measurePrefix(to)),
       );
       if (x2 - x1 <= 0.05) continue;
       const hasFormula = /[\ue000-\uf8ff]/u.test(line.text.slice(from, to));
@@ -182,24 +199,27 @@ export function buildBlockLayout(record: TranslatedBlockRecord): BlockLayout {
         : 0.2;
       const y1 = Math.max(
         0,
-        Math.min(record.pageHeight, line.baselineY - line.size * topAscent),
+        Math.min(line.pageHeight, line.baselineY - line.size * topAscent),
       );
       const y2 = Math.max(
         0,
-        Math.min(record.pageHeight, line.baselineY + line.size * botDescent),
+        Math.min(line.pageHeight, line.baselineY + line.size * botDescent),
       );
       if (y2 - y1 <= 0.05) continue;
-      rects.push({
-        x: x1 / record.pageWidth,
-        y: y1 / record.pageHeight,
-        width: (x2 - x1) / record.pageWidth,
-        height: (y2 - y1) / record.pageHeight,
+      results.push({
+        page: line.page,
+        rect: {
+          x: x1 / line.pageWidth,
+          y: y1 / line.pageHeight,
+          width: (x2 - x1) / line.pageWidth,
+          height: (y2 - y1) / line.pageHeight,
+        },
       });
     }
-    return rects;
+    return results;
   };
 
-  return { ...record, sentenceRanges, spanRects };
+  return { ...record, sentenceRanges, spanPageRects };
 }
 
 function resolveTranslationSpan(
@@ -247,7 +267,7 @@ function resolveTranslationSpan(
   const normalizedWindow = normalizeWithOffsets(windowStr);
   for (const candidate of [
     rawQuote,
-    exportText(rawQuote, () => "\ufffc") ?? "",
+    exportFlowText(rawQuote, () => "\ufffc"),
   ]) {
     if (!candidate) continue;
     const needle = normalizeWithOffsets(candidate).text;
@@ -261,8 +281,6 @@ function resolveTranslationSpan(
     }
   }
 
-  // Inline KaTeX DOM text may expand math symbols; fall back safely to the
-  // persisted sentence window, matching the reader's own recovery behavior.
   return { start: winStart, end: winEnd };
 }
 
@@ -331,14 +349,74 @@ function sentenceOffset(translation: TranslationBlock, index: number): number {
     .join("").length;
 }
 
+function remapTOCItems(
+  items: TOCItem[],
+  anchors: BlockAnchorRecord[],
+  layouts: Map<string, BlockLayout>,
+  maxOutPage: number,
+): TOCItem[] {
+  const mapLocation = (loc: TOCItem["location"]): TOCItem["location"] => {
+    if (loc.type !== "pdf" || !anchors.length) {
+      return { type: "pdf", page: 1 };
+    }
+    const srcY = loc.y ?? 0;
+    const samePage = anchors.filter((a) => a.sourcePage === loc.page);
+    const pool = samePage.length ? samePage : anchors;
+    let best = pool[0];
+    let bestScore = Infinity;
+    for (const candidate of pool) {
+      const pagePenalty = Math.abs(candidate.sourcePage - loc.page) * 10;
+      const yPenalty = Math.abs(candidate.sourceY - srcY);
+      const score = pagePenalty + yPenalty;
+      if (score < bestScore) {
+        bestScore = score;
+        best = candidate;
+      }
+    }
+    return {
+      type: "pdf",
+      page: Math.max(1, Math.min(maxOutPage, best.outPage)),
+      x: 0,
+      y: best.outY,
+    };
+  };
+
+  return items.map((item) => {
+    let label = item.label;
+    if (item.location.type === "pdf") {
+      const srcPage = item.location.page;
+      // Translate unmodified PDF heading labels when a matching paragraph_title was translated.
+      const heading = [...layouts.values()].find(
+        (l) =>
+          l.sourcePage === srcPage &&
+          (l.block.label === "paragraph_title" ||
+            l.block.label === "doc_title") &&
+          compact(l.block.text) === compact(item.originalLabel ?? item.label),
+      );
+      if (
+        heading &&
+        (!item.originalLabel || item.label === item.originalLabel)
+      ) {
+        label = heading.text.replace(/\s+/gu, " ").trim() || label;
+      }
+    }
+    return {
+      ...item,
+      label,
+      location: mapLocation(item.location),
+      children: remapTOCItems(item.children, anchors, layouts, maxOutPage),
+    };
+  });
+}
+
 export async function applyTranslatedPDFAnnotations({
   getDocument,
   source,
   sourcePDF,
   bytes,
-  blocks,
-  translations,
   translatedBlocks,
+  figurePlacements,
+  blockAnchors,
   annotations = [],
   answers = {},
   navigation,
@@ -348,9 +426,11 @@ export async function applyTranslatedPDFAnnotations({
   source: DocumentInitParameters;
   sourcePDF: PDFDocumentProxy;
   bytes: Uint8Array;
-  blocks: PDFBlock[];
-  translations: TranslationBlock[];
+  blocks?: PDFBlock[];
+  translations?: TranslationBlock[];
   translatedBlocks: TranslatedBlockRecord[];
+  figurePlacements: FigurePlacementRecord[];
+  blockAnchors: BlockAnchorRecord[];
   annotations?: Annotation[];
   answers?: Record<string, string>;
   navigation?: (pdf: PDFDocumentProxy) => Promise<TOCItem[]>;
@@ -361,23 +441,59 @@ export async function applyTranslatedPDFAnnotations({
   skipped: number;
   navigationExported?: number;
 }> {
-  let outputBytes = bytes;
-  let navigationExported: number | undefined;
-  if (navigation) {
-    signal?.throwIfAborted();
-    const items = await navigation(sourcePDF);
-    signal?.throwIfAborted();
-    const count = (nodes: TOCItem[]): number =>
-      nodes.reduce((n, item) => n + 1 + count(item.children), 0);
-    navigationExported = count(items);
-    if (items.length) {
-      outputBytes = await writePDFOutline(outputBytes, items, sourcePDF);
-    }
-  }
-
   const marks = annotations.filter(
     (a) => a.kind !== "bookmark" && a.location.type === "pdf",
   );
+  if (!marks.length && !navigation) {
+    return { bytes, exported: 0, skipped: 0 };
+  }
+
+  const layouts = new Map<string, BlockLayout>();
+  const layoutsBySourcePage = new Map<number, BlockLayout[]>();
+  for (const record of translatedBlocks) {
+    const built = buildBlockLayout(record);
+    layouts.set(record.block.id, built);
+    const list = layoutsBySourcePage.get(record.sourcePage) ?? [];
+    list.push(built);
+    layoutsBySourcePage.set(record.sourcePage, list);
+  }
+  const figuresById = new Map(figurePlacements.map((f) => [f.blockId, f]));
+  const figuresBySourcePage = new Map<number, FigurePlacementRecord[]>();
+  for (const fig of figurePlacements) {
+    const list = figuresBySourcePage.get(fig.sourcePage) ?? [];
+    list.push(fig);
+    figuresBySourcePage.set(fig.sourcePage, list);
+  }
+
+  let outputBytes = bytes;
+  let navigationExported: number | undefined;
+  const { url: _url, data: _data, ...fontParams } = source;
+
+  // Step 1: Write remapped PDF Outline / Bookmarks against the new translated PDF pages.
+  if (navigation) {
+    signal?.throwIfAborted();
+    const rawItems = await navigation(sourcePDF);
+    signal?.throwIfAborted();
+    const count = (nodes: TOCItem[]): number =>
+      nodes.reduce((n, item) => n + 1 + count(item.children), 0);
+    navigationExported = count(rawItems);
+    if (rawItems.length) {
+      const navTask = getDocument({ ...fontParams, data: outputBytes.slice() });
+      try {
+        const navPDF = await navTask.promise;
+        const remapped = remapTOCItems(
+          rawItems,
+          blockAnchors,
+          layouts,
+          navPDF.numPages,
+        );
+        outputBytes = await writePDFOutline(outputBytes, remapped, navPDF);
+      } finally {
+        await navTask.destroy().catch(() => {});
+      }
+    }
+  }
+
   if (!marks.length) {
     return {
       bytes: outputBytes,
@@ -387,56 +503,71 @@ export async function applyTranslatedPDFAnnotations({
     };
   }
 
-  const layouts = new Map<string, BlockLayout>();
-  const layoutsByPage = new Map<number, BlockLayout[]>();
-  for (const record of translatedBlocks) {
-    const built = buildBlockLayout(record);
-    layouts.set(record.block.id, built);
-    const list = layoutsByPage.get(record.page) ?? [];
-    list.push(built);
-    layoutsByPage.set(record.page, list);
-  }
-  const blocksById = new Map(blocks.map((b) => [b.id, b]));
-  for (const record of translatedBlocks)
-    blocksById.set(record.block.id, record.block);
-  const translationsById = new Map(translations.map((t) => [t.blockId, t]));
-
-  const inRange = (page: number) => page >= 1 && page <= sourcePDF.numPages;
-  const pageCache = new Map<number, Promise<PDFPageProxy>>();
-  const getPage = (page: number) => {
-    let cached = pageCache.get(page);
-    if (!cached) {
-      cached = sourcePDF.getPage(page);
-      pageCache.set(page, cached);
-    }
-    return cached;
+  // Step 2: Resolve all translation-side and source-side annotations onto output pages.
+  const outTask = getDocument({ ...fontParams, data: outputBytes.slice() });
+  const abortOut = () => {
+    void outTask.destroy().catch(() => {});
   };
+  signal?.addEventListener("abort", abortOut, { once: true });
 
-  const resolved: Array<{
-    key: string;
-    value: ReturnType<typeof editorValue>;
-  }> = [];
-  let exported = 0,
-    skipped = 0;
-
-  for (const annotation of marks) {
+  try {
+    const outPDF = await outTask.promise;
     signal?.throwIfAborted();
-    const location = annotation.location as PDFLocation;
-    const pages = new Map<number, Quad[]>();
-    const addQuads = (page: number, quads: Quad[]) => {
-      if (!quads.length) return;
-      pages.set(page, [...(pages.get(page) ?? []), ...quads]);
+
+    const srcPageCache = new Map<number, Promise<PDFPageProxy>>();
+    const getSrcPage = (p: number) => {
+      let cached = srcPageCache.get(p);
+      if (!cached) {
+        cached = sourcePDF.getPage(p);
+        srcPageCache.set(p, cached);
+      }
+      return cached;
+    };
+    const outPageCache = new Map<number, Promise<PDFPageProxy>>();
+    const getOutPage = (p: number) => {
+      let cached = outPageCache.get(p);
+      if (!cached) {
+        cached = outPDF.getPage(p);
+        outPageCache.set(p, cached);
+      }
+      return cached;
     };
 
-    if (location.translation) {
-      const mark = location.translation;
-      const parts: TranslationPart[] = mark.ranges?.length
-        ? mark.ranges
-        : [{ ...mark, quote: annotation.quote }];
-      for (const part of parts) {
-        const layout = layouts.get(part.blockId);
-        if (layout) {
-          if (layout.translation.sourceHash !== part.sourceHash) {
+    const inSrcRange = (p: number) => p >= 1 && p <= sourcePDF.numPages;
+    const inOutRange = (p: number) => p >= 1 && p <= outPDF.numPages;
+
+    let exported = 0,
+      skipped = 0;
+
+    for (const annotation of marks) {
+      signal?.throwIfAborted();
+      const location = annotation.location as PDFLocation;
+      const pages = new Map<number, Quad[]>();
+      const addPageRects = async (items: PageRect[]) => {
+        const byPage = new Map<number, Rect[]>();
+        for (const item of items) {
+          if (!inOutRange(item.page)) continue;
+          const list = byPage.get(item.page) ?? [];
+          list.push(item.rect);
+          byPage.set(item.page, list);
+        }
+        for (const [pageNum, rects] of byPage) {
+          const outPage = await getOutPage(pageNum);
+          const quads = displayQuads(outPage, rects);
+          if (quads.length) {
+            pages.set(pageNum, [...(pages.get(pageNum) ?? []), ...quads]);
+          }
+        }
+      };
+
+      if (location.translation) {
+        const mark = location.translation;
+        const parts: TranslationPart[] = mark.ranges?.length
+          ? mark.ranges
+          : [{ ...mark, quote: annotation.quote }];
+        for (const part of parts) {
+          const layout = layouts.get(part.blockId);
+          if (!layout || layout.translation.sourceHash !== part.sourceHash) {
             pages.clear();
             break;
           }
@@ -445,168 +576,107 @@ export async function applyTranslatedPDFAnnotations({
             part,
             parts.length === 1 ? annotation.quote : "",
           );
-          const rects = span ? layout.spanRects(span.start, span.end) : [];
-          if (!rects.length) {
+          const pageRects = span
+            ? layout.spanPageRects(span.start, span.end)
+            : [];
+          if (!pageRects.length) {
             pages.clear();
             break;
           }
-          const page = await getPage(layout.page);
-          addQuads(layout.page, displayQuads(page, rects));
-          continue;
+          await addPageRects(pageRects);
         }
-        // Paragraph remained in original English; place on its matching source sentences.
-        const block = blocksById.get(part.blockId);
-        const translation = translationsById.get(part.blockId);
-        if (
-          !block ||
-          !inRange(block.page) ||
-          !translation ||
-          translation.sourceHash !== part.sourceHash
-        ) {
-          pages.clear();
-          break;
-        }
-        const sources = part.sentenceIndexes
-          .map((i) => translation.sentences[i])
-          .filter(Boolean)
-          .map(sentenceAnchor);
-        const fallbackSources = sources.length
-          ? sources
-          : part.sourceText
-            ? [part.sourceText]
-            : [];
-        const page = await getPage(block.page);
-        const quads = await sentenceQuads(
-          page,
-          block.bounds,
-          fallbackSources,
-          part.sentenceIndexes.length
-            ? sentenceOffset(translation, part.sentenceIndexes[0])
-            : 0,
-        );
-        if (!quads.length) {
-          pages.clear();
-          break;
-        }
-        addQuads(block.page, quads);
-      }
-    } else if (location.sourceAnchors?.length) {
-      for (const anchor of location.sourceAnchors) {
-        if (!inRange(anchor.page)) {
-          pages.clear();
-          break;
-        }
-        const anchorNorm = compact(anchor.source);
-        const pageLayouts = layoutsByPage.get(anchor.page) ?? [];
-        const candidates = pageLayouts.filter((l) =>
-          compact(l.block.text).includes(anchorNorm),
-        );
-        const layout =
-          layouts.get(anchor.blockId) ??
-          (candidates.length === 1 ? candidates[0] : undefined);
-        const page = await getPage(anchor.page);
-        if (layout) {
+      } else if (location.sourceAnchors?.length) {
+        for (const anchor of location.sourceAnchors) {
+          const anchorNorm = compact(anchor.source);
+          const candidates = (
+            layoutsBySourcePage.get(anchor.page) ?? []
+          ).filter((l) => compact(l.block.text).includes(anchorNorm));
+          const layout =
+            layouts.get(anchor.blockId) ??
+            (candidates.length === 1 ? candidates[0] : undefined);
+          if (!layout) {
+            pages.clear();
+            break;
+          }
           const indexes = matchSourceSentencesByText(
             layout.translation,
             anchor.source,
           );
-          const rects = contiguousRuns(indexes).flatMap(([from, to]) =>
-            layout.spanRects(
+          const pageRects = contiguousRuns(indexes).flatMap(([from, to]) =>
+            layout.spanPageRects(
               layout.sentenceRanges[from].start,
               layout.sentenceRanges[to].end,
             ),
           );
-          if (!rects.length) {
+          if (!pageRects.length) {
             pages.clear();
             break;
           }
-          addQuads(layout.page, displayQuads(page, rects));
-        } else {
-          const quads = await sentenceQuads(page, anchor.bounds, [
-            anchor.source,
-          ]);
-          if (!quads.length) {
-            pages.clear();
-            break;
-          }
-          addQuads(anchor.page, quads);
+          await addPageRects(pageRects);
         }
-      }
-    } else if (location.sentenceLink?.parts?.length) {
-      for (const part of location.sentenceLink.parts) {
-        const layout = layouts.get(part.blockId);
-        if (
-          layout &&
-          layout.translation.sourceHash === part.sourceHash &&
-          layout.sentenceRanges[part.sentenceIndex]
-        ) {
+      } else if (location.sentenceLink?.parts?.length) {
+        for (const part of location.sentenceLink.parts) {
+          const layout = layouts.get(part.blockId);
+          if (
+            !layout ||
+            layout.translation.sourceHash !== part.sourceHash ||
+            !layout.sentenceRanges[part.sentenceIndex]
+          ) {
+            pages.clear();
+            break;
+          }
           const range = layout.sentenceRanges[part.sentenceIndex];
-          const rects = layout.spanRects(range.start, range.end);
-          if (!rects.length) {
+          const pageRects = layout.spanPageRects(range.start, range.end);
+          if (!pageRects.length) {
             pages.clear();
             break;
           }
-          const page = await getPage(layout.page);
-          addQuads(layout.page, displayQuads(page, rects));
-          continue;
+          await addPageRects(pageRects);
         }
-        const block = blocksById.get(part.blockId);
-        if (!block || !inRange(block.page)) {
-          pages.clear();
-          break;
-        }
-        const page = await getPage(block.page);
-        const quads = await sentenceQuads(
-          page,
-          block.bounds,
-          [part.source],
-          layout ? sentenceOffset(layout.translation, part.sentenceIndex) : 0,
-        );
-        if (!quads.length) {
-          pages.clear();
-          break;
-        }
-        addQuads(block.page, quads);
-      }
-    } else if (inRange(location.page) && location.rects?.length) {
-      const page = await getPage(location.page);
-      const viewport = page.getViewport({ scale: 1 });
-      const pageLayouts = layoutsByPage.get(location.page) ?? [];
-      const rectItems = location.rects.map((norm) => ({
-        norm,
-        pts: {
-          x: norm.x * viewport.width,
-          y: norm.y * viewport.height,
-          width: norm.width * viewport.width,
-          height: norm.height * viewport.height,
-        },
-      }));
-      const touched = pageLayouts.filter((l) =>
-        rectItems.some((item) => overlaps(item.pts, l.mask)),
-      );
-      if (!touched.length) {
-        addQuads(location.page, displayQuads(page, location.rects));
-      } else {
-        const outsideNorms = rectItems
-          .filter((item) => !touched.some((l) => overlaps(item.pts, l.mask)))
-          .map((item) => item.norm);
-        if (outsideNorms.length) {
-          addQuads(location.page, displayQuads(page, outsideNorms));
-        }
-        for (const layout of touched) {
-          const overlappingPts = rectItems
-            .filter((item) => overlaps(item.pts, layout.mask))
+      } else if (inSrcRange(location.page) && location.rects?.length) {
+        const srcPage = await getSrcPage(location.page);
+        const srcViewport = srcPage.getViewport({ scale: 1 });
+        const srcRectsPts = location.rects.map((norm) => ({
+          norm,
+          pts: {
+            x: norm.x * srcViewport.width,
+            y: norm.y * srcViewport.height,
+            width: norm.width * srcViewport.width,
+            height: norm.height * srcViewport.height,
+          },
+        }));
+
+        const pageLayouts = layoutsBySourcePage.get(location.page) ?? [];
+        const touchedLayouts = pageLayouts.filter((l) => {
+          const boxPts = {
+            x: l.sourceBounds.x * srcViewport.width,
+            y: l.sourceBounds.y * srcViewport.height,
+            width: l.sourceBounds.width * srcViewport.width,
+            height: l.sourceBounds.height * srcViewport.height,
+          };
+          return srcRectsPts.some((item) => overlaps(item.pts, boxPts));
+        });
+
+        for (const layout of touchedLayouts) {
+          const boxPts = {
+            x: layout.sourceBounds.x * srcViewport.width,
+            y: layout.sourceBounds.y * srcViewport.height,
+            width: layout.sourceBounds.width * srcViewport.width,
+            height: layout.sourceBounds.height * srcViewport.height,
+          };
+          const overlappingPts = srcRectsPts
+            .filter((item) => overlaps(item.pts, boxPts))
             .map((item) => item.pts);
           const matched: number[] = [];
           for (let i = 0; i < layout.translation.sentences.length; i++) {
             const sQuads = await sentenceQuads(
-              page,
-              layout.block.bounds,
+              srcPage,
+              layout.sourceBounds,
               [sentenceAnchor(layout.translation.sentences[i])],
               sentenceOffset(layout.translation, i),
             );
             const hit = sQuads.some((q) => {
-              const sq = quadDisplayRect(page, q);
+              const sq = quadDisplayRect(srcPage, q);
               return overlappingPts.some((rp) => {
                 const vOverlap =
                   Math.min(rp.y + rp.height, sq.y + sq.height) -
@@ -637,17 +707,11 @@ export async function applyTranslatedPDFAnnotations({
             const count = layout.sentenceRanges.length;
             const fromRatio = Math.max(
               0,
-              Math.min(
-                0.999,
-                (minY - layout.box.y) / Math.max(1, layout.box.height),
-              ),
+              Math.min(0.999, (minY - boxPts.y) / Math.max(1, boxPts.height)),
             );
             const toRatio = Math.max(
               fromRatio,
-              Math.min(
-                0.999,
-                (maxY - layout.box.y) / Math.max(1, layout.box.height),
-              ),
+              Math.min(0.999, (maxY - boxPts.y) / Math.max(1, boxPts.height)),
             );
             for (
               let idx = Math.floor(fromRatio * count);
@@ -657,58 +721,86 @@ export async function applyTranslatedPDFAnnotations({
               matched.push(idx);
             }
           }
-          const rects = contiguousRuns(matched).flatMap(([from, to]) =>
-            layout.spanRects(
+          const pageRects = contiguousRuns(matched).flatMap(([from, to]) =>
+            layout.spanPageRects(
               layout.sentenceRanges[from].start,
               layout.sentenceRanges[to].end,
             ),
           );
-          addQuads(layout.page, displayQuads(page, rects));
+          await addPageRects(pageRects);
         }
+
+        // Also map source annotations placed onto figures, tables, charts, or equations.
+        const pageFigures = figuresBySourcePage.get(location.page) ?? [];
+        for (const fig of pageFigures) {
+          const figPts = {
+            x: fig.sourceBounds.x * srcViewport.width,
+            y: fig.sourceBounds.y * srcViewport.height,
+            width: fig.sourceBounds.width * srcViewport.width,
+            height: fig.sourceBounds.height * srcViewport.height,
+          };
+          const mappedRects: PageRect[] = [];
+          for (const item of srcRectsPts) {
+            if (!overlaps(item.pts, figPts)) continue;
+            const ix1 = Math.max(figPts.x, item.pts.x);
+            const iy1 = Math.max(figPts.y, item.pts.y);
+            const ix2 = Math.min(
+              figPts.x + figPts.width,
+              item.pts.x + item.pts.width,
+            );
+            const iy2 = Math.min(
+              figPts.y + figPts.height,
+              item.pts.y + item.pts.height,
+            );
+            if (ix2 <= ix1 || iy2 <= iy1) continue;
+            const rx = (ix1 - figPts.x) / Math.max(1, figPts.width);
+            const ry = (iy1 - figPts.y) / Math.max(1, figPts.height);
+            const rw = (ix2 - ix1) / Math.max(1, figPts.width);
+            const rh = (iy2 - iy1) / Math.max(1, figPts.height);
+            mappedRects.push({
+              page: fig.outPage,
+              rect: {
+                x: fig.outRect.x + rx * fig.outRect.width,
+                y: fig.outRect.y + ry * fig.outRect.height,
+                width: rw * fig.outRect.width,
+                height: rh * fig.outRect.height,
+              },
+            });
+          }
+          if (mappedRects.length) await addPageRects(mappedRects);
+        }
+        void figuresById;
       }
+
+      if (!pages.size) {
+        skipped++;
+        continue;
+      }
+
+      let comment = commentText(annotation, answers[annotation.answerId ?? ""]);
+      for (const [pageNum, quads] of [...pages].sort((a, b) => a[0] - b[0])) {
+        outPDF.annotationStorage.setValue(
+          `${editorPrefix}${annotation.id}-${pageNum}`,
+          editorValue(annotation, pageNum - 1, quads, comment),
+        );
+        comment = "";
+      }
+      exported++;
     }
 
-    if (!pages.size) {
-      skipped++;
-      continue;
-    }
-
-    let comment = commentText(annotation, answers[annotation.answerId ?? ""]);
-    for (const [pageNum, quads] of [...pages].sort((a, b) => a[0] - b[0])) {
-      resolved.push({
-        key: `${editorPrefix}${annotation.id}-${pageNum}`,
-        value: editorValue(annotation, pageNum - 1, quads, comment),
-      });
-      comment = "";
-    }
-    exported++;
-  }
-
-  if (resolved.length) {
-    signal?.throwIfAborted();
-    const { url: _url, data: _data, ...fontParams } = source;
-    const outTask = getDocument({ ...fontParams, data: outputBytes.slice() });
-    const abortOut = () => {
-      void outTask.destroy().catch(() => {});
-    };
-    signal?.addEventListener("abort", abortOut, { once: true });
-    try {
-      const outPDF = await outTask.promise;
+    if (exported > 0) {
       signal?.throwIfAborted();
-      for (const entry of resolved) {
-        outPDF.annotationStorage.setValue(entry.key, entry.value);
-      }
       outputBytes = await outPDF.saveDocument();
-    } finally {
-      signal?.removeEventListener("abort", abortOut);
-      await outTask.destroy().catch(() => {});
     }
-  }
 
-  return {
-    bytes: outputBytes,
-    exported,
-    skipped,
-    ...(navigationExported !== undefined ? { navigationExported } : {}),
-  };
+    return {
+      bytes: outputBytes,
+      exported,
+      skipped,
+      ...(navigationExported !== undefined ? { navigationExported } : {}),
+    };
+  } finally {
+    signal?.removeEventListener("abort", abortOut);
+    await outTask.destroy().catch(() => {});
+  }
 }

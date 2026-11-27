@@ -107,7 +107,7 @@ it("exports translated PDF independently of Markdown selections and reports pres
     translated: 8,
     annotationsExported: 2,
     annotationsSkipped: 1,
-    issues: [{ page: 2, blockId: "b", reason: "overflow" }],
+    issues: [{ page: 2, blockId: "b", reason: "untranslated" }],
   });
   await mount();
   await act(async () => button("导出译文 PDF").click());
@@ -120,9 +120,8 @@ it("exports translated PDF independently of Markdown selections and reports pres
   expect(document.body.textContent).toContain(
     "保留 2 条批注（1 条无法定位未写入）",
   );
-  expect(document.body.textContent).toContain(
-    "第 2 页：译文无法在原区域内排下",
-  );
+  expect(document.body.textContent).toContain("查看未包含的段落（1）");
+  expect(document.body.textContent).toContain("第 2 页：尚无已完成译文");
   expect(api.exportTranslation).not.toHaveBeenCalled();
   expect(exportAnnotatedPDFWithToast).not.toHaveBeenCalled();
   expect(close).not.toHaveBeenCalled();

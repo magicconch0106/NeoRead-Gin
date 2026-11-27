@@ -191,7 +191,7 @@ export function exportTranslatedPDFWithToast(doc: Document) {
       const parts = [`已写入 ${translated} 个译文段落`];
       if (annotationsExported) parts.push(`保留 ${annotationsExported} 条批注`);
       const details: string[] = [];
-      if (issues.length) details.push(`${issues.length} 处保留原文`);
+      if (issues.length) details.push(`${issues.length} 处未完成段落未包含`);
       if (annotationsSkipped)
         details.push(`${annotationsSkipped} 条批注无法定位`);
       toast.success(parts.join("，"), {

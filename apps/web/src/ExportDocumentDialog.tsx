@@ -317,7 +317,8 @@ export function ExportDocumentDialog({
           <div className="space-y-3 border-t pt-4">
             <div className="flex items-center gap-3">
               <p className="flex-1 text-xs leading-5 text-muted-foreground">
-                按原版面导出已保存的译文，并保留批注、划线、问答与书签。图表、公式和无法排入的段落保留原文。
+                导出纯中文单栏排版的译文
+                PDF，包含原论文图表与公式，并保留批注、划线、问答与书签，不含英文原文。
               </p>
               <Button
                 variant="outline"
@@ -365,7 +366,7 @@ export function ExportDocumentDialog({
                 {pdfResult.issues.length > 0 && (
                   <details>
                     <summary className="cursor-pointer">
-                      查看保留原文的区域（{pdfResult.issues.length}）
+                      查看未包含的段落（{pdfResult.issues.length}）
                     </summary>
                     <ul className="mt-1 max-h-32 list-inside list-disc overflow-y-auto">
                       {pdfResult.issues.map((issue, i) => (

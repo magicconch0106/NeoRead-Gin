@@ -169,7 +169,7 @@ it("passes PDF annotations, Q&A answers and navigation to the engine and reports
     bytes: new Uint8Array([37, 80, 68, 70]),
     translated: 5,
     pages: 2,
-    issues: [{ page: 2, blockId: "p2-b1", reason: "overflow" }],
+    issues: [{ page: 2, blockId: "p2-b1", reason: "untranslated" }],
     annotationsExported: 1,
     annotationsSkipped: 0,
   });
@@ -183,7 +183,7 @@ it("passes PDF annotations, Q&A answers and navigation to the engine and reports
     "已写入 5 个译文段落，保留 1 条批注",
     {
       id: "toast-id",
-      description: "1 处保留原文",
+      description: "1 处未完成段落未包含",
     },
   );
 });
