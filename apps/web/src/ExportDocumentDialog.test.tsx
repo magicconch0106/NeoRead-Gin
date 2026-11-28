@@ -329,3 +329,26 @@ it("exports only selected annotation kinds into the original PDF", async () => {
   await act(async () => checkbox("批注").click());
   expect(button("导出 PDF").disabled).toBe(false);
 });
+
+it("allows choosing bilingual paragraph-by-paragraph PDF export and persists the layout", async () => {
+  vi.mocked(exportTranslatedPDF).mockResolvedValue({
+    pages: 5,
+    translated: 8,
+    annotationsExported: 3,
+    issues: [],
+  });
+  await mount();
+  await act(async () => button("逐段原文+译文").click());
+  expect(localStorage.getItem("neoread.translated-pdf-layout")).toBe(
+    "bilingual",
+  );
+  await act(async () => button("导出译文 PDF").click());
+  expect(exportTranslatedPDF).toHaveBeenCalledWith(
+    doc,
+    expect.any(AbortSignal),
+    expect.any(Function),
+    undefined,
+    "bilingual",
+  );
+  expect(document.body.textContent).toContain("已生成 5 页 PDF");
+});

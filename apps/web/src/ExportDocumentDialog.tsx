@@ -26,11 +26,23 @@ import {
   exportReasons,
   type PDFExportProgress,
   type TranslatedPDF,
+  type TranslatedPDFLayout,
 } from "./translation/pdf-export-model";
 
 type DocumentExportPart = "translation" | ExportPart;
 const labels = { translation: "译文", ...exportParts };
 const storageKey = "neoread.notes-export";
+const pdfLayoutStorageKey = "neoread.translated-pdf-layout";
+
+function savedPDFLayout(): TranslatedPDFLayout {
+  try {
+    return localStorage.getItem(pdfLayoutStorageKey) === "bilingual"
+      ? "bilingual"
+      : "translation";
+  } catch {
+    return "translation";
+  }
+}
 function savedParts(): DocumentExportPart[] {
   try {
     const value: unknown = JSON.parse(localStorage.getItem(storageKey) || "");
@@ -67,6 +79,16 @@ export function ExportDocumentDialog({
   });
   const [refresh, setRefresh] = useState(0);
   const [images, setImages] = useState(false);
+  const [pdfLayout, setPDFLayout] =
+    useState<TranslatedPDFLayout>(savedPDFLayout);
+  const choosePDFLayout = (next: TranslatedPDFLayout) => {
+    setPDFLayout(next);
+    try {
+      localStorage.setItem(pdfLayoutStorageKey, next);
+    } catch {
+      /* session only */
+    }
+  };
   const [busy, setBusy] = useState<
     "copy" | "download" | "pdf" | "translation-pdf" | null
   >(null);
@@ -201,13 +223,19 @@ export function ExportDocumentDialog({
     setError("");
     setPDFResult(null);
     try {
-      const result = await exportTranslatedPDF(
-        doc,
-        controller.signal,
-        (progress) => {
-          if (!controller.signal.aborted) setPDFProgress(progress);
-        },
-      );
+      const onProgress = (progress: PDFExportProgress) => {
+        if (!controller.signal.aborted) setPDFProgress(progress);
+      };
+      const result =
+        pdfLayout === "bilingual"
+          ? await exportTranslatedPDF(
+              doc,
+              controller.signal,
+              onProgress,
+              undefined,
+              "bilingual",
+            )
+          : await exportTranslatedPDF(doc, controller.signal, onProgress);
       if (!controller.signal.aborted) setPDFResult(result);
     } catch (error) {
       if (!controller.signal.aborted)
@@ -315,10 +343,50 @@ export function ExportDocumentDialog({
         </div>
         {doc.type === "pdf" && (
           <div className="space-y-3 border-t pt-4">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-medium text-foreground">
+                译文 PDF 版式
+              </span>
+              <div
+                role="radiogroup"
+                aria-label="译文 PDF 版式"
+                className="inline-flex rounded-md border bg-muted/40 p-0.5 text-xs"
+              >
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={pdfLayout === "translation"}
+                  disabled={!!busy}
+                  onClick={() => choosePDFLayout("translation")}
+                  className={`rounded px-2 py-1 transition-colors ${
+                    pdfLayout === "translation"
+                      ? "bg-background font-medium text-foreground shadow-xs"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  纯中文译文
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={pdfLayout === "bilingual"}
+                  disabled={!!busy}
+                  onClick={() => choosePDFLayout("bilingual")}
+                  className={`rounded px-2 py-1 transition-colors ${
+                    pdfLayout === "bilingual"
+                      ? "bg-background font-medium text-foreground shadow-xs"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  逐段原文+译文
+                </button>
+              </div>
+            </div>
             <div className="flex items-center gap-3">
               <p className="flex-1 text-xs leading-5 text-muted-foreground">
-                导出纯中文单栏排版的译文
-                PDF，包含原论文图表与公式，并保留批注、划线、问答与书签，不含英文原文。
+                {pdfLayout === "bilingual"
+                  ? "导出一段原文、一段译文交替排版的单栏 PDF，包含原论文图表与公式，并保留批注、划线、问答与书签。"
+                  : "导出纯中文单栏排版的译文 PDF，包含原论文图表与公式，并保留批注、划线、问答与书签，不含英文原文。"}
               </p>
               <Button
                 variant="outline"

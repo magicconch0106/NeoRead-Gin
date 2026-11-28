@@ -20,6 +20,8 @@ export type PDFExportProgress = {
   done: number;
   total: number;
 };
+export type TranslatedPDFLayout = "translation" | "bilingual";
+
 export type TranslatedPDF = {
   bytes: Uint8Array;
   translated: number;

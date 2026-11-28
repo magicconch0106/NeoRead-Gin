@@ -1,5 +1,12 @@
-import type { ReaderLayout, ReaderTheme } from "@neoread/core";
+import type { ReaderLayout, ReaderTheme, ReadingMode } from "@neoread/core";
 import { useReaderStore } from "./store";
+
+const validModes = new Set<ReadingMode>([
+  "source",
+  "parallel",
+  "interleaved",
+  "translation",
+]);
 
 const defaults: ReaderLayout = {
   navigationWidth: 15,
@@ -26,6 +33,7 @@ export function readerLayout(value: ReaderTheme["readerLayout"]): ReaderLayout {
   const flag = (
     key: "navigationOpen" | "assistantOpen" | "swapped" | "stacked",
   ) => (typeof value?.[key] === "boolean" ? value[key] : defaults[key]);
+  const mode = value?.readingMode;
   return {
     navigationWidth: width("navigationWidth", 30),
     assistantWidth: width("assistantWidth", 45),
@@ -34,6 +42,7 @@ export function readerLayout(value: ReaderTheme["readerLayout"]): ReaderLayout {
     sourceWidth: width("sourceWidth", 80, 20),
     swapped: flag("swapped"),
     stacked: flag("stacked"),
+    ...(mode && validModes.has(mode) ? { readingMode: mode } : {}),
   };
 }
 

@@ -20,6 +20,7 @@ import { readPDFOutline } from "./readers/pdf-outline";
 import type {
   PDFExportProgress,
   TranslatedPDF,
+  TranslatedPDFLayout,
 } from "./translation/pdf-export-model";
 
 export async function exportTranslatedPDF(
@@ -27,6 +28,7 @@ export async function exportTranslatedPDF(
   signal: AbortSignal,
   onProgress: (progress: PDFExportProgress) => void,
   kinds?: Annotation["kind"][],
+  layout: TranslatedPDFLayout = "translation",
 ): Promise<Omit<TranslatedPDF, "bytes">> {
   const started = performance.now();
   const requestId = crypto.randomUUID();
@@ -113,6 +115,7 @@ export async function exportTranslatedPDF(
       { cjk, latin },
       {
         signal,
+        layout,
         annotations: marks,
         answers,
         navigation: navigation
@@ -139,7 +142,7 @@ export async function exportTranslatedPDF(
       new Blob([result.bytes as Uint8Array<ArrayBuffer>], {
         type: "application/pdf",
       }),
-      `${fileTitle(doc.title)}-译文.pdf`,
+      `${fileTitle(doc.title)}-${layout === "bilingual" ? "逐段对照" : "译文"}.pdf`,
     );
     // Browser download initiation is observable; disk completion is not.
     event(
@@ -172,21 +175,31 @@ export async function exportTranslatedPDF(
 }
 
 /** Runs translated PDF export from library context menus with toast feedback. */
-export function exportTranslatedPDFWithToast(doc: Document) {
+export function exportTranslatedPDFWithToast(
+  doc: Document,
+  layout: TranslatedPDFLayout = "translation",
+) {
   const controller = new AbortController();
-  const id = toast.loading("正在导出译文 PDF…");
-  return exportTranslatedPDF(doc, controller.signal, (progress) => {
-    if (progress.phase === "pages" && progress.total > 0) {
-      toast.loading(
-        `正在排版译文 PDF（${progress.done + 1} / ${progress.total} 页）…`,
-        {
-          id,
-        },
-      );
-    } else if (progress.phase === "saving") {
-      toast.loading("正在写入译文与批注…", { id });
-    }
-  }).then(
+  const modeLabel = layout === "bilingual" ? "逐段对照 PDF" : "译文 PDF";
+  const id = toast.loading(`正在导出${modeLabel}…`);
+  return exportTranslatedPDF(
+    doc,
+    controller.signal,
+    (progress) => {
+      if (progress.phase === "pages" && progress.total > 0) {
+        toast.loading(
+          `正在排版${modeLabel}（${progress.done + 1} / ${progress.total} 页）…`,
+          {
+            id,
+          },
+        );
+      } else if (progress.phase === "saving") {
+        toast.loading("正在写入译文与批注…", { id });
+      }
+    },
+    undefined,
+    layout,
+  ).then(
     ({ translated, annotationsExported, annotationsSkipped, issues }) => {
       const parts = [`已写入 ${translated} 个译文段落`];
       if (annotationsExported) parts.push(`保留 ${annotationsExported} 条批注`);

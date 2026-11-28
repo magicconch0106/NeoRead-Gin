@@ -11,8 +11,15 @@ import type {
   SearchResult,
   TranslationBlock,
 } from "@neoread/core";
-import { translatedAnnotationRanges } from "./annotations";
-import { sourcePassage, translatedSentenceRanges } from "./sentence-links";
+import {
+  interleavedSourceAnnotationRanges,
+  translatedAnnotationRanges,
+} from "./annotations";
+import {
+  interleavedSourceSentenceRanges,
+  sourcePassage,
+  translatedSentenceRanges,
+} from "./sentence-links";
 import { searchRanges } from "./search-ranges";
 
 type Mark = { annotation: Annotation; range: Range };
@@ -143,18 +150,32 @@ export function useSentenceMarks(
         targetCache.set(key, translatedSentenceRanges(host, blockId, index));
       return targetCache.get(key)!;
     };
+    const interleavedCache = new Map<string, Range[]>();
+    const interleavedRanges = (blockId: string, index: number) => {
+      const key = `${blockId}:${index}`;
+      if (!interleavedCache.has(key))
+        interleavedCache.set(
+          key,
+          interleavedSourceSentenceRanges(host, blockId, index),
+        );
+      return interleavedCache.get(key)!;
+    };
     const paint = () => {
       frame = 0;
       cache.clear();
       geometry = new WeakMap();
       targetCache.clear();
+      interleavedCache.clear();
       hover.invalidate();
       const { annotations, translations, blocks, searchQuery, searchResults } =
         latest.current;
       names.forEach((name) => registry.delete(name));
       registry.delete(searchName);
       names = [];
-      marks = translatedAnnotationRanges(host, annotations, translations);
+      marks = [
+        ...translatedAnnotationRanges(host, annotations, translations),
+        ...interleavedSourceAnnotationRanges(host, annotations),
+      ];
       for (const annotation of annotations) {
         if (
           annotation.location.type !== "pdf" ||
@@ -253,20 +274,31 @@ export function useSentenceMarks(
               )
                 ranges.push(
                   ...searchRanges(
-                    sourceRanges(translation, index),
+                    [
+                      ...sourceRanges(translation, index),
+                      ...interleavedRanges(block.id, index),
+                    ],
                     searchQuery,
                   ),
                 );
             });
           } else {
-            ranges.push(
-              ...searchRanges(
-                engine.sentenceRanges?.([
-                  { blockId: block.id, sources: [block.text] },
-                ]) ?? [],
-                searchQuery,
-              ),
-            );
+            const interleavedRoot = Array.from(
+              host.querySelectorAll<HTMLElement>("[data-translation-block]"),
+            )
+              .find((n) => n.dataset.translationBlock === block.id)
+              ?.querySelector<HTMLElement>("[data-interleaved-source]");
+            const fallbackSourceRanges = [
+              ...(engine.sentenceRanges?.([
+                { blockId: block.id, sources: [block.text] },
+              ]) ?? []),
+            ];
+            if (interleavedRoot) {
+              const r = document.createRange();
+              r.selectNodeContents(interleavedRoot);
+              fallbackSourceRanges.push(r);
+            }
+            ranges.push(...searchRanges(fallbackSourceRanges, searchQuery));
           }
         }
         if (ranges.length) {
@@ -316,11 +348,20 @@ export function useSentenceMarks(
         marks,
         [pointRect],
       );
+      if (mode === "interleaved") {
+        report(direct, [pointRect]);
+        hover.clear(true);
+        return;
+      }
       if (direct.length) hover.clear(true);
       const translated = target.closest<HTMLElement>("[data-sentence]");
+      const interleavedSource = target.closest<HTMLElement>(
+        "[data-source-sentence]",
+      );
       let t: TranslationBlock | undefined,
         index = -1,
-        fromTranslation = false;
+        fromTranslation = false,
+        fromInterleavedSource = false;
       if (translated) {
         const blockId = translated.closest<HTMLElement>(
           "[data-translation-block]",
@@ -333,6 +374,23 @@ export function useSentenceMarks(
         // The full-width sentence container includes whitespace outside the text.
         if (
           !targetRanges(blockId ?? "", index).some((r) =>
+            containsPoint(r, event.clientX, event.clientY),
+          )
+        ) {
+          deferClear();
+          return;
+        }
+      } else if (interleavedSource) {
+        const blockId = interleavedSource.closest<HTMLElement>(
+          "[data-translation-block]",
+        )?.dataset.translationBlock;
+        t = translations.find(
+          (t) => t.blockId === blockId && t.status === "complete",
+        );
+        index = Number(interleavedSource.dataset.sourceSentence);
+        fromInterleavedSource = true;
+        if (
+          !interleavedRanges(blockId ?? "", index).some((r) =>
             containsPoint(r, event.clientX, event.clientY),
           )
         ) {
@@ -385,14 +443,20 @@ export function useSentenceMarks(
         deferClear();
         return;
       }
+      const sourceSideRanges =
+        mode === "interleaved"
+          ? interleavedRanges(t.blockId, index)
+          : sourceRanges(t, index);
       const ranges = [
-        ...(!fromTranslation || linked ? sourceRanges(t, index) : []),
+        ...(fromInterleavedSource || !fromTranslation || linked
+          ? sourceSideRanges
+          : []),
         ...(fromTranslation || linked ? targetRanges(t.blockId, index) : []),
       ];
       cancelLeave();
       activeRanges = fromTranslation
         ? targetRanges(t.blockId, index)
-        : sourceRanges(t, index);
+        : sourceSideRanges;
       const rects = activeRanges.flatMap((range) =>
         Array.from(range.getClientRects()),
       );

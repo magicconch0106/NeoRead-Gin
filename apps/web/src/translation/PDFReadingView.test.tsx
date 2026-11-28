@@ -98,6 +98,9 @@ const adapter = {
   followBlock: vi.fn(async () => {}),
   focusSentences: vi.fn(async () => {}),
   hoverBlock: vi.fn(),
+  fitSingleColumn: vi.fn(async (_w: number, _p?: number, strip?: boolean) =>
+    strip ? 20 : 17,
+  ),
 } as unknown as ReaderAdapter;
 vi.mock("../ReaderView", () => ({
   ReaderView: ({
@@ -207,7 +210,7 @@ it("retains PDF.js search on pages without parsed blocks", async () => {
 
 afterEach(async () => {
   await act(async () => root.unmount());
-  useReaderStore.getState().setTheme({ reducedMotion: false });
+  useReaderStore.setState({ theme: defaultTheme });
   host.remove();
   window.getSelection()?.removeAllRanges();
   vi.clearAllMocks();
@@ -221,7 +224,10 @@ async function click(label: string) {
   )!;
   expect(button).toBeTruthy();
   await act(async () => button.click());
-  if (["原文译文", "仅原文", "仅译文"].includes(label) && !vi.isFakeTimers()) {
+  if (
+    ["原文译文", "逐段对照", "仅原文", "仅译文"].includes(label) &&
+    !vi.isFakeTimers()
+  ) {
     await act(async () => {
       await new Promise<void>((resolve) =>
         requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
@@ -1281,4 +1287,152 @@ it("keeps a long document's unchanged translations out of progress rerenders and
   );
   expect(host.textContent).toContain("Updated translation.");
   expect(fixture.markdownRenders - renders).toBe(1);
+});
+
+it("renders interleaved source and translation paragraphs without hover clutter and supports single-column fitContent", async () => {
+  await click("逐段对照");
+  expect(
+    host.querySelector(".pdf-reading")?.getAttribute("data-reading-mode"),
+  ).toBe("interleaved");
+  expect(host.querySelector(".translation-source")?.hasAttribute("inert")).toBe(
+    true,
+  );
+  const block = host.querySelector<HTMLElement>(
+    '[data-translation-block="p1-b1"]',
+  )!;
+  expect(
+    block.querySelector("[data-interleaved-source]")?.textContent,
+  ).toContain("First sentence.");
+  expect(block.querySelector(".translation-sentences")?.textContent).toContain(
+    "第一句。",
+  );
+
+  // Zero hover distractions: no inline retranslate button, no floating block actions, no hover highlight attribute.
+  expect(host.querySelector(".translation-retranslate-inline")).toBeNull();
+  expect(host.querySelector(".block-actions")).toBeNull();
+  await act(async () =>
+    block.dispatchEvent(new MouseEvent("pointermove", { bubbles: true })),
+  );
+  expect(block.dataset.hovered).toBeUndefined();
+
+  // Selecting Chinese sentence 1 in interleaved mode keeps paragraph-relative Chinese offsets (start=4, end=8).
+  const targetSentence = block.querySelector('[data-sentence="1"] p')!;
+  const targetRange = document.createRange();
+  targetRange.selectNodeContents(targetSentence);
+  Object.assign(targetRange, {
+    getBoundingClientRect: () => new DOMRect(120, 140, 80, 20),
+  });
+  window.getSelection()!.removeAllRanges();
+  window.getSelection()!.addRange(targetRange);
+  await act(async () =>
+    targetSentence.dispatchEvent(
+      new MouseEvent("pointerup", { bubbles: true }),
+    ),
+  );
+  expect(events.selection).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      text: "第二句。",
+      location: expect.objectContaining({
+        translation: expect.objectContaining({
+          blockId: "p1-b1",
+          sentenceIndexes: [1],
+          start: 4,
+          end: 8,
+        }),
+      }),
+    }),
+  );
+
+  // Selecting English sentence 0 in interleaved mode produces a source-side PDF selection.
+  const srcSentence = block.querySelector('[data-source-sentence="0"] p')!;
+  const srcRange = document.createRange();
+  srcRange.selectNodeContents(srcSentence);
+  Object.assign(srcRange, {
+    getBoundingClientRect: () => new DOMRect(120, 100, 120, 20),
+  });
+  window.getSelection()!.removeAllRanges();
+  window.getSelection()!.addRange(srcRange);
+  await act(async () =>
+    srcSentence.dispatchEvent(new MouseEvent("pointerup", { bubbles: true })),
+  );
+  expect(events.selection).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      text: "First sentence.",
+      location: expect.objectContaining({
+        type: "pdf",
+        page: 1,
+        quote: "First sentence.",
+        sourceAnchors: [
+          expect.objectContaining({
+            blockId: "p1-b1",
+            source: "First sentence.",
+          }),
+        ],
+      }),
+    }),
+  );
+  expect(fixture.ready!.getSelection()?.location.translation).toBeUndefined();
+
+  // Single-column fitContent expands column and scales font size via adapter.fitSingleColumn.
+  const reading = host.querySelector<HTMLElement>(".pdf-reading")!;
+  const docPane = host.querySelector<HTMLElement>(".translation-document")!;
+  Object.defineProperty(docPane, "clientWidth", {
+    configurable: true,
+    value: 960,
+  });
+  await act(async () => {
+    await fixture.ready!.fitContent!();
+  });
+  expect(reading.getAttribute("data-content-fit")).toBe("true");
+  expect(adapter.fitSingleColumn).toHaveBeenCalledWith(960, 1, true);
+  expect(docPane.style.fontSize).toBe("20px");
+});
+
+it("merges multi-panel composite figures, drops empty reference blocks, and escapes footnote bullets", async () => {
+  const { mergeCompositeFigureBlocks, escapeFootnoteMarkdown } = await import(
+    "./pdf-figures"
+  );
+  const merged = mergeCompositeFigureBlocks([
+    {
+      id: "p40-b1",
+      page: 40,
+      label: "reference_content",
+      text: "",
+      bounds: { x: 0.1, y: 0.1, width: 0.8, height: 0.05 },
+    },
+    {
+      id: "p45-b2",
+      page: 45,
+      label: "image",
+      text: "",
+      image: "p45-b2.png",
+      bounds: { x: 0.1, y: 0.15, width: 0.38, height: 0.3 },
+    },
+    {
+      id: "p45-b3",
+      page: 45,
+      label: "image",
+      text: "",
+      image: "p45-b3.png",
+      bounds: { x: 0.52, y: 0.15, width: 0.38, height: 0.3 },
+    },
+    {
+      id: "p45-b4",
+      page: 45,
+      label: "vision_footnote",
+      text: "",
+      bounds: { x: 0.12, y: 0.46, width: 0.34, height: 0.03 },
+    },
+  ]);
+  expect(merged).toHaveLength(1);
+  expect(merged[0]).toMatchObject({
+    id: "p45-b2:composite",
+    page: 45,
+    label: "image",
+    text: "",
+  });
+  expect(merged[0].bounds.width).toBeGreaterThan(0.75);
+  expect(
+    escapeFootnoteMarkdown("* . Wang: University of Chicago", "footnote"),
+  ).toBe("\\* . Wang: University of Chicago");
 });

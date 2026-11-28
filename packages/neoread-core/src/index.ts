@@ -355,6 +355,8 @@ export interface ReaderAnnotationTarget {
   anchor: SelectionAnchor;
 }
 export type Appearance = "light" | "sepia" | "dark" | "system";
+export type ReadingMode = "source" | "parallel" | "interleaved" | "translation";
+
 /** Last user-chosen reading layout, shared by PDF and EPUB documents. */
 export interface ReaderLayout {
   /** Expanded sidebar widths as percentages of the full reading workspace. */
@@ -367,6 +369,8 @@ export interface ReaderLayout {
   swapped: boolean;
   /** Parallel mode stacks source and translation top and bottom. */
   stacked: boolean;
+  /** Last selected reading mode tab. */
+  readingMode?: ReadingMode;
 }
 export interface ReaderTheme {
   /** Ordered open documents and the selected document; null selects the library. */
@@ -468,10 +472,25 @@ export interface LinkPreview {
   image: string;
   /** Image width divided by height. */
   ratio: number;
+  /** Optional descriptive header label (e.g. "图 2 · 第 45 页"). */
+  title?: string;
+  /** Optional selectable text summary (e.g. full bibliography entry). */
+  captionText?: string;
+  /** Opens directly as a non-modal floating corner window. */
+  autoPin?: boolean;
   /** Exact target for the preview's explicit navigation control. */
   location?: PDFLocation;
   /** Re-render the crop from the PDF at the requested physical pixel width. */
   renderImage?: (width: number, signal: AbortSignal) => Promise<string>;
+}
+export interface PDFPreviewRegionOptions {
+  page: number;
+  bounds: PDFBlock["bounds"];
+  title?: string;
+  captionText?: string;
+  location?: PDFLocation;
+  autoPin?: boolean;
+  textHint?: { surname: string; year: string };
 }
 export interface ReaderEvents {
   /** Show (or hide with null) a preview of an internal link's target. */
@@ -520,6 +539,12 @@ export interface ReaderAdapter {
   setTheme(theme: ReaderTheme): Promise<void>;
   /** Fit PDF content to the pane without including the paper's empty margins. */
   fitContent?(): Promise<void>;
+  /** Compute single-column body text size in CSS pixels for the given pane width. */
+  fitSingleColumn?(
+    paneWidth: number,
+    pageNumber?: number,
+    stripMargins?: boolean,
+  ): Promise<number | undefined>;
   /** Layout choices that must apply before the first page is shown. */
   preferTheme?(theme: ReaderTheme): void;
   getContext(): Promise<string>;
@@ -536,12 +561,15 @@ export interface ReaderAdapter {
     blockId: string,
     signal: AbortSignal,
     width?: number,
+    boundsOverride?: PDFBlock["bounds"],
   ): Promise<Blob>;
   followBlock?(anchor: PDFReadingAnchor): Promise<void>;
   previewCitation?(
     location: PDFLocation,
     anchor: HTMLAnchorElement,
   ): Promise<void>;
+  /** Opens a floating preview crop for a figure, table, or bibliography region. */
+  previewRegion?(options: PDFPreviewRegionOptions): Promise<void>;
   hideCitationPreview?(): void;
   resolveCitation?(
     blockId: string,

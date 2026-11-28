@@ -415,6 +415,7 @@ export async function applyTranslatedPDFAnnotations({
   sourcePDF,
   bytes,
   translatedBlocks,
+  sourceBlocks = [],
   figurePlacements,
   blockAnchors,
   annotations = [],
@@ -429,6 +430,7 @@ export async function applyTranslatedPDFAnnotations({
   blocks?: PDFBlock[];
   translations?: TranslationBlock[];
   translatedBlocks: TranslatedBlockRecord[];
+  sourceBlocks?: TranslatedBlockRecord[];
   figurePlacements: FigurePlacementRecord[];
   blockAnchors: BlockAnchorRecord[];
   annotations?: Annotation[];
@@ -457,6 +459,19 @@ export async function applyTranslatedPDFAnnotations({
     list.push(built);
     layoutsBySourcePage.set(record.sourcePage, list);
   }
+  const sourceLayouts = new Map<string, BlockLayout>();
+  const sourceLayoutsBySourcePage = new Map<number, BlockLayout[]>();
+  for (const record of sourceBlocks) {
+    const built = buildBlockLayout(record);
+    sourceLayouts.set(record.block.id, built);
+    const list = sourceLayoutsBySourcePage.get(record.sourcePage) ?? [];
+    list.push(built);
+    sourceLayoutsBySourcePage.set(record.sourcePage, list);
+  }
+  const sourceTargetLayouts = sourceLayouts.size ? sourceLayouts : layouts;
+  const sourceTargetLayoutsByPage = sourceLayouts.size
+    ? sourceLayoutsBySourcePage
+    : layoutsBySourcePage;
   const figuresById = new Map(figurePlacements.map((f) => [f.blockId, f]));
   const figuresBySourcePage = new Map<number, FigurePlacementRecord[]>();
   for (const fig of figurePlacements) {
@@ -589,10 +604,10 @@ export async function applyTranslatedPDFAnnotations({
         for (const anchor of location.sourceAnchors) {
           const anchorNorm = compact(anchor.source);
           const candidates = (
-            layoutsBySourcePage.get(anchor.page) ?? []
+            sourceTargetLayoutsByPage.get(anchor.page) ?? []
           ).filter((l) => compact(l.block.text).includes(anchorNorm));
           const layout =
-            layouts.get(anchor.blockId) ??
+            sourceTargetLayouts.get(anchor.blockId) ??
             (candidates.length === 1 ? candidates[0] : undefined);
           if (!layout) {
             pages.clear();
@@ -602,12 +617,33 @@ export async function applyTranslatedPDFAnnotations({
             layout.translation,
             anchor.source,
           );
-          const pageRects = contiguousRuns(indexes).flatMap(([from, to]) =>
-            layout.spanPageRects(
-              layout.sentenceRanges[from].start,
-              layout.sentenceRanges[to].end,
-            ),
-          );
+          const phraseQuote =
+            sourceLayouts.size && location.sourceAnchors.length === 1
+              ? annotation.quote.trim()
+              : "";
+          const phraseSpan =
+            phraseQuote && indexes.length
+              ? resolveTranslationSpan(
+                  layout,
+                  {
+                    blockId: layout.block.id,
+                    sourceHash: layout.translation.sourceHash,
+                    sentenceIndexes: indexes,
+                    start: 0,
+                    end: 0,
+                    quote: phraseQuote,
+                  },
+                  phraseQuote,
+                )
+              : null;
+          const pageRects = phraseSpan
+            ? layout.spanPageRects(phraseSpan.start, phraseSpan.end)
+            : contiguousRuns(indexes).flatMap(([from, to]) =>
+                layout.spanPageRects(
+                  layout.sentenceRanges[from].start,
+                  layout.sentenceRanges[to].end,
+                ),
+              );
           if (!pageRects.length) {
             pages.clear();
             break;
@@ -616,7 +652,7 @@ export async function applyTranslatedPDFAnnotations({
         }
       } else if (location.sentenceLink?.parts?.length) {
         for (const part of location.sentenceLink.parts) {
-          const layout = layouts.get(part.blockId);
+          const layout = sourceTargetLayouts.get(part.blockId);
           if (
             !layout ||
             layout.translation.sourceHash !== part.sourceHash ||
@@ -646,7 +682,7 @@ export async function applyTranslatedPDFAnnotations({
           },
         }));
 
-        const pageLayouts = layoutsBySourcePage.get(location.page) ?? [];
+        const pageLayouts = sourceTargetLayoutsByPage.get(location.page) ?? [];
         const touchedLayouts = pageLayouts.filter((l) => {
           const boxPts = {
             x: l.sourceBounds.x * srcViewport.width,
@@ -721,12 +757,33 @@ export async function applyTranslatedPDFAnnotations({
               matched.push(idx);
             }
           }
-          const pageRects = contiguousRuns(matched).flatMap(([from, to]) =>
-            layout.spanPageRects(
-              layout.sentenceRanges[from].start,
-              layout.sentenceRanges[to].end,
-            ),
-          );
+          const phraseQuote =
+            sourceLayouts.size && touchedLayouts.length === 1
+              ? (location.quote || annotation.quote || "").trim()
+              : "";
+          const phraseSpan =
+            phraseQuote && matched.length
+              ? resolveTranslationSpan(
+                  layout,
+                  {
+                    blockId: layout.block.id,
+                    sourceHash: layout.translation.sourceHash,
+                    sentenceIndexes: matched,
+                    start: 0,
+                    end: 0,
+                    quote: phraseQuote,
+                  },
+                  phraseQuote,
+                )
+              : null;
+          const pageRects = phraseSpan
+            ? layout.spanPageRects(phraseSpan.start, phraseSpan.end)
+            : contiguousRuns(matched).flatMap(([from, to]) =>
+                layout.spanPageRects(
+                  layout.sentenceRanges[from].start,
+                  layout.sentenceRanges[to].end,
+                ),
+              );
           await addPageRects(pageRects);
         }
 

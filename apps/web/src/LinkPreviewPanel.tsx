@@ -39,6 +39,27 @@ export function constrainPreviewFrame(
 const constrain = (frame: Frame) =>
   constrainPreviewFrame(frame, window.innerWidth, window.innerHeight);
 
+function defaultCornerFrame(preview: LinkPreview): Frame {
+  const vw = window.innerWidth || 1280;
+  const vh = window.innerHeight || 800;
+  const w = Math.round(Math.min(580, Math.max(360, vw * 0.42)));
+  const imgH = w / Math.max(0.4, preview.ratio || 1.25);
+  const extra = preview.captionText ? 146 : 92;
+  const h = Math.round(
+    Math.min(Math.max(260, imgH + extra), Math.min(680, vh - 96)),
+  );
+  return constrainPreviewFrame(
+    {
+      x: vw - w - 24,
+      y: Math.max(64, vh - h - 52),
+      width: w,
+      height: h,
+    },
+    vw,
+    vh,
+  );
+}
+
 /** Retains the target while the pointer crosses from the citation to its controls. */
 export function LinkPreviewPanel({
   preview,
@@ -52,16 +73,21 @@ export function LinkPreviewPanel({
   renderKey?: string;
 }) {
   const [current, setCurrent] = useState(preview);
-  const [pinned, setPinned] = useState(false);
+  const [pinned, setPinned] = useState(() => !!preview?.autoPin);
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   const engaged = hovered || focused;
-  const [frame, setFrame] = useState<Frame>({
-    x: 24,
-    y: 80,
-    width: 600,
-    height: 480,
-  });
+  const userAdjustedFrame = useRef(false);
+  const [frame, setFrame] = useState<Frame>(() =>
+    preview?.autoPin
+      ? defaultCornerFrame(preview)
+      : {
+          x: 24,
+          y: 80,
+          width: 600,
+          height: 480,
+        },
+  );
   const popup = useRef<HTMLDivElement>(null);
   const motion = useRef<{
     pointer: number;
@@ -71,6 +97,16 @@ export function LinkPreviewPanel({
     resize: boolean;
   } | null>(null);
   useEffect(() => {
+    if (preview?.autoPin) {
+      setCurrent(preview);
+      if (!pinned) {
+        setFrame(defaultCornerFrame(preview));
+        setPinned(true);
+      } else if (!userAdjustedFrame.current) {
+        setFrame(defaultCornerFrame(preview));
+      }
+      return;
+    }
     if (pinned) return;
     if (preview) {
       setCurrent(preview);
@@ -87,6 +123,7 @@ export function LinkPreviewPanel({
     return () => window.removeEventListener("resize", resize);
   }, [pinned]);
   const close = () => {
+    userAdjustedFrame.current = false;
     setPinned(false);
     setHovered(false);
     setFocused(false);
@@ -120,6 +157,7 @@ export function LinkPreviewPanel({
   const move = (event: ReactPointerEvent<HTMLElement>) => {
     const drag = motion.current;
     if (!drag || drag.pointer !== event.pointerId) return;
+    userAdjustedFrame.current = true;
     const dx = event.clientX - drag.x,
       dy = event.clientY - drag.y;
     setFrame(
@@ -153,6 +191,7 @@ export function LinkPreviewPanel({
     if (!direction) return;
     event.preventDefault();
     event.stopPropagation();
+    userAdjustedFrame.current = true;
     const step = event.shiftKey ? 40 : 10;
     setFrame((old) =>
       constrain(
@@ -171,6 +210,8 @@ export function LinkPreviewPanel({
     );
   };
   if (!current) return null;
+  const headerTitle = current.title || `第 ${current.page} 页`;
+  const previewIdentity = `${current.page}:${current.location?.x ?? ""}:${current.location?.y ?? ""}:${current.title ?? ""}`;
   const navigate = () => {
     onNavigate(current.location ?? { type: "pdf", page: current.page });
     if (!pinned) close();
@@ -233,7 +274,7 @@ export function LinkPreviewPanel({
           }}
         >
           <DialogTitle className="sr-only">
-            第 {current.page} 页固定预览
+            {headerTitle}固定预览
           </DialogTitle>
           <div className="link-preview-header">
             <Button
@@ -249,12 +290,19 @@ export function LinkPreviewPanel({
               onLostPointerCapture={stop}
               onKeyDown={(e) => keyboardFrame(e, false)}
             >
-              <Pin className="size-3.5" />
-              <span>第 {current.page} 页</span>
+              <Pin className="size-3.5 shrink-0" />
+              <span className="truncate">{headerTitle}</span>
             </Button>
             {actions}
           </div>
-          <PreviewImage preview={current} renderKey={renderKey} />
+          <PreviewImage
+            key={previewIdentity}
+            preview={current}
+            renderKey={renderKey}
+          />
+          {current.captionText && (
+            <div className="link-preview-caption">{current.captionText}</div>
+          )}
           <Button
             variant="ghost"
             size="icon-sm"
@@ -303,14 +351,17 @@ export function LinkPreviewPanel({
         }}
       >
         <div className="link-preview-header">
-          <span className="link-preview-label">第 {current.page} 页</span>
+          <span className="link-preview-label truncate">{headerTitle}</span>
           {actions}
         </div>
         <img
           src={current.image}
-          alt={`第 ${current.page} 页链接目标`}
+          alt={headerTitle}
           style={{ aspectRatio: current.ratio }}
         />
+        {current.captionText && (
+          <div className="link-preview-caption">{current.captionText}</div>
+        )}
       </PopoverContent>
     </Popover>
   );

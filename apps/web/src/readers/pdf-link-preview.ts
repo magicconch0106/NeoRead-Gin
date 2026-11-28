@@ -3,6 +3,7 @@ import {
   defaultTheme,
   type LinkPreview,
   type PDFLocation,
+  type PDFPreviewRegionOptions,
   type ReaderTheme,
 } from "@neoread/core";
 import { pdfObjectColors, type PDFDarkRegion } from "./pdf-dark-mode";
@@ -250,6 +251,55 @@ export class PDFLinkPreview {
       );
     } catch {
       /* a broken destination simply has no preview */
+    }
+  }
+  async showRegion(options: PDFPreviewRegionOptions) {
+    const request = ++this.request;
+    const pdf = this.pdf();
+    if (!pdf || this.disposed) return;
+    const controller = new AbortController();
+    try {
+      const proxy = await pdf.getPage(options.page);
+      if (this.disposed || request !== this.request) return;
+      const base = proxy.getViewport({ scale: 1 });
+      const cropW = Math.max(1, base.width * options.bounds.width);
+      const cropH = Math.max(1, base.height * options.bounds.height);
+      const initialPixels = Math.round(
+        Math.min(1400, Math.max(900, 620 * (window.devicePixelRatio || 1))),
+      );
+      const image = await this.renderCrop(
+        pdf,
+        options.page,
+        options.bounds,
+        initialPixels,
+        controller.signal,
+      );
+      if (this.disposed || request !== this.request) return;
+      const vw = window.innerWidth || 1280;
+      this.show({
+        anchor: {
+          left: Math.max(24, vw - 64),
+          top: 80,
+          width: 24,
+          height: 24,
+        },
+        page: options.page,
+        image,
+        ratio: cropW / cropH,
+        title: options.title,
+        captionText: options.captionText,
+        autoPin: options.autoPin,
+        location: options.location ?? {
+          type: "pdf",
+          page: options.page,
+          x: options.bounds.x,
+          y: options.bounds.y,
+        },
+        renderImage: (pixels, signal) =>
+          this.renderCrop(pdf, options.page, options.bounds, pixels, signal),
+      });
+    } catch {
+      /* cancelled or unavailable */
     }
   }
   private async showTarget(

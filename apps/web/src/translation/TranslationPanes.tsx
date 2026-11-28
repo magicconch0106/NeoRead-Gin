@@ -26,7 +26,7 @@ export function TranslationPanes({
   source,
   translation,
 }: {
-  mode: "source" | "parallel" | "translation";
+  mode: "source" | "parallel" | "interleaved" | "translation";
   swapped: boolean;
   onSwap: () => void;
   onResizeStart?: () => void;
@@ -44,13 +44,14 @@ export function TranslationPanes({
     (state) => readerLayout(state.theme.readerLayout).stacked,
   );
   const parallel = mode === "parallel";
+  const singleTranslation = mode === "translation" || mode === "interleaved";
   const sourceId = `${id}-${swapped ? "right" : "left"}`;
 
   useLayoutEffect(() => {
     sourcePanel.current?.resize(
-      `${mode === "source" ? 100 : mode === "translation" ? 0 : rememberedWidth.current}%`,
+      `${mode === "source" ? 100 : singleTranslation ? 0 : rememberedWidth.current}%`,
     );
-  }, [mode, swapped, stacked, sourcePanel]);
+  }, [mode, singleTranslation, swapped, stacked, sourcePanel]);
 
   // Keep DOM order stable: reinserting a panel resets descendant scroll positions.
   // CSS order swaps sides; positional IDs refresh the resize library's ordering.
@@ -59,11 +60,11 @@ export function TranslationPanes({
       key="source"
       id={sourceId}
       panelRef={sourcePanel}
-      defaultSize={`${mode === "source" ? 100 : mode === "translation" ? 0 : sourceWidth}%`}
+      defaultSize={`${mode === "source" ? 100 : singleTranslation ? 0 : sourceWidth}%`}
       minSize={parallel ? "20%" : "0%"}
       className="translation-pane-content"
       style={{ overflow: "hidden" }}
-      inert={mode === "translation"}
+      inert={singleTranslation}
     >
       {source}
     </ResizablePanel>,
@@ -77,7 +78,7 @@ export function TranslationPanes({
     <ResizablePanel
       key="translation"
       id={`${id}-${swapped ? "left" : "right"}`}
-      defaultSize={`${mode === "source" ? 0 : mode === "translation" ? 100 : 100 - sourceWidth}%`}
+      defaultSize={`${mode === "source" ? 0 : singleTranslation ? 100 : 100 - sourceWidth}%`}
       minSize={parallel ? "20%" : "0%"}
       className="translation-pane-content"
       style={{ overflow: "hidden" }}

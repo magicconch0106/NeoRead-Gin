@@ -1,5 +1,6 @@
 import type { Creator, Document } from "@neoread/core";
 import { creatorName, paperCreators, paperLink, paperYear } from "./format";
+import { isPreprintVenueOrDOI } from "./working-paper-metadata";
 
 /**
  * Citations come only from stored metadata; nothing is sent anywhere.
@@ -41,8 +42,7 @@ const conferenceVenue =
 export function citationType(doc: Document) {
   const m = doc.metadata;
   if (m.itemType) return m.itemType;
-  if (/^(arxiv|openreview|biorxiv|medrxiv|corr)\b/i.test(m.venue || ""))
-    return "preprint";
+  if (isPreprintVenueOrDOI(m.venue, m.doi)) return "preprint";
   if (m.venue && conferenceVenue.test(m.venue)) return "conference";
   if (m.venue) return "journal";
   return m.arxiv ? "preprint" : "other";

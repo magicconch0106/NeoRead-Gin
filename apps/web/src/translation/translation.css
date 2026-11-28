@@ -120,12 +120,107 @@
 }
 .translation-sentence,
 .translation-sentence > .message-markdown,
-.translation-sentence > .message-markdown > p {
+.translation-sentence > .message-markdown > p,
+.translation-source-sentence,
+.translation-source-sentence > .message-markdown,
+.translation-source-sentence > .message-markdown > p {
   display: inline;
   margin: 0;
 }
-.translation-sentence::after {
+.translation-sentence::after,
+.translation-source-sentence::after {
   content: " ";
+}
+.pdf-reading[data-reading-mode="interleaved"] .translation-document,
+.pdf-reading[data-reading-mode="translation"] .translation-document {
+  padding-left: clamp(20px, 4vw, 52px);
+  padding-right: clamp(20px, 4vw, 52px);
+}
+.pdf-reading[data-reading-mode="interleaved"] .translation-document section,
+.pdf-reading[data-reading-mode="translation"] .translation-document section,
+.epub-reading[data-reading-mode="interleaved"] .translation-document section {
+  max-width: min(62rem, 100%);
+  margin: 0 auto 1.4em;
+}
+.pdf-reading[data-content-fit="true"] .translation-document {
+  padding-left: clamp(20px, 3vw, 40px);
+  padding-right: clamp(20px, 3vw, 40px);
+}
+.pdf-reading[data-content-fit="true"] .translation-document section {
+  max-width: min(82rem, 100%);
+}
+/* Keep single-column interleaved reading completely calm without hover frames. */
+.pdf-reading[data-reading-mode="interleaved"]
+  .translation-document
+  [data-translation-block][data-hovered],
+.epub-reading[data-reading-mode="interleaved"]
+  .translation-document
+  [data-translation-block][data-hovered] {
+  background: transparent;
+  outline: none;
+  box-shadow: none;
+}
+.translation-interleaved-source {
+  font-weight: 400;
+  line-height: 1.66;
+  margin-bottom: 0.42em;
+  color: color-mix(in srgb, currentColor 82%, transparent);
+}
+.translation-sentences[data-interleaved-target] {
+  display: block;
+  padding-left: 0.72em;
+  border-left: 2px solid color-mix(in srgb, currentColor 18%, transparent);
+}
+:root[data-theme="sepia"] .translation-sentences[data-interleaved-target] {
+  border-left-color: var(--brand-30);
+}
+.translation-document [data-label="doc_title"] .translation-interleaved-source,
+.translation-document
+  [data-label="paragraph_title"]
+  .translation-interleaved-source {
+  font-weight: 600;
+  margin-bottom: 0.25em;
+  color: inherit;
+}
+.translation-document
+  :is([data-label="doc_title"], [data-label="paragraph_title"])
+  .translation-sentences[data-interleaved-target] {
+  padding-left: 0;
+  border-left: 0;
+}
+.translation-image[data-previewable="true"] {
+  cursor: zoom-in;
+}
+.translation-image-placeholder {
+  min-height: 8rem;
+  margin: 12px auto;
+  border-radius: 4px;
+  background: color-mix(in srgb, currentColor 5%, transparent);
+}
+.pdf-reading:is(
+    [data-reading-mode="interleaved"],
+    [data-reading-mode="translation"]
+  )
+  .pdf-reading-controls {
+  justify-content: flex-end;
+  right: 20px;
+  bottom: 14px;
+}
+.pdf-reading:is(
+    [data-reading-mode="interleaved"],
+    [data-reading-mode="translation"]
+  )
+  .pdf-page-navigation {
+  opacity: 0.58;
+  backdrop-filter: blur(8px);
+  transition: opacity 150ms ease;
+}
+.pdf-reading:is(
+    [data-reading-mode="interleaved"],
+    [data-reading-mode="translation"]
+  )
+  .pdf-page-navigation:is(:hover, :focus-within) {
+  opacity: 1;
 }
 .translation-sentence[data-linked] {
   background: color-mix(in srgb, var(--primary) 13%, transparent);

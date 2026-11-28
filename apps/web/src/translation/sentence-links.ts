@@ -113,3 +113,25 @@ export function translatedSentenceRanges(
   }
   return ranges;
 }
+
+export function interleavedSourceSentenceRanges(
+  host: HTMLElement,
+  blockId: string,
+  index: number,
+): Range[] {
+  const block = Array.from(
+    host.querySelectorAll<HTMLElement>("[data-translation-block]"),
+  ).find((n) => n.dataset.translationBlock === blockId);
+  const sentence = block?.querySelector(`[data-source-sentence="${index}"]`);
+  if (!sentence) return [];
+  const ranges: Range[] = [];
+  const walker = document.createTreeWalker(sentence, NodeFilter.SHOW_TEXT);
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    if (!node.textContent?.trim()) continue;
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    ranges.push(range);
+  }
+  return ranges;
+}

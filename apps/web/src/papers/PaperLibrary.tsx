@@ -85,7 +85,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@neoread/ui/components/dropdown-menu";
-import { useReaderStore } from "../store";
+import { useReaderStore, refreshLibrary } from "../store";
+import {
+  enrichWorkingPaperFromPDF,
+  needsWorkingPaperEnrichment,
+} from "./working-paper-metadata";
 import { TrashView } from "../TrashView";
 import { BookCoverImage } from "../book-cover";
 import { useCardZoom } from "../useCardZoom";
@@ -242,6 +246,33 @@ export function PaperLibrary({
   const [journalRankConfig, setJournalRankConfig] =
     useState<JournalRankConfig | null>(null);
   const [journalRankRefresh, setJournalRankRefresh] = useState(0);
+  const enrichedPreprints = useRef(new Set<string>());
+  useEffect(() => {
+    const pending = documents.filter(
+      (doc) =>
+        !enrichedPreprints.current.has(doc.id) &&
+        needsWorkingPaperEnrichment(doc, jobs.get(doc.id)),
+    );
+    if (!pending.length) return;
+    let cancelled = false;
+    for (const doc of pending) enrichedPreprints.current.add(doc.id);
+    void (async () => {
+      let changed = false;
+      for (const doc of pending) {
+        if (cancelled) break;
+        const ok = await enrichWorkingPaperFromPDF(doc, {
+          repairMangledCreators: true,
+        }).catch(() => false);
+        if (ok) changed = true;
+      }
+      if (changed && !cancelled) {
+        await refreshLibrary().catch(() => {});
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [documents, jobs]);
   useEffect(() => {
     let mounted = true;
     const load = () =>

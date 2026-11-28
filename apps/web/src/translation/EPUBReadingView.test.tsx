@@ -177,7 +177,7 @@ async function renderView(theme: ReaderTheme = defaultTheme) {
 
 afterEach(async () => {
   await act(async () => root.unmount());
-  useReaderStore.getState().setTheme({ reducedMotion: false });
+  useReaderStore.setState({ theme: defaultTheme });
   host.remove();
   window.getSelection()?.removeAllRanges();
   vi.clearAllMocks();
@@ -480,4 +480,27 @@ it("uses only the reader's loaded blocks and subscribes only to their chapters",
     expect.any(Function),
     ["b.xhtml"],
   );
+});
+
+it("supports single-column interleaved original + translation paragraphs in EPUB mode", async () => {
+  await click("逐段对照");
+  expect(host.querySelector('[data-mode="interleaved"]')).toBeTruthy();
+  const block = host.querySelector<HTMLElement>(
+    '[data-translation-block="p1-b1"]',
+  )!;
+  expect(
+    block.querySelector("[data-interleaved-source]")?.textContent,
+  ).toContain("First sentence.");
+  expect(block.querySelector(".translation-sentences")?.textContent).toContain(
+    "第一句。",
+  );
+  expect(host.querySelector(".translation-retranslate-inline")).toBeNull();
+  expect(host.querySelector(".block-actions")).toBeNull();
+  await act(async () =>
+    block.dispatchEvent(new MouseEvent("pointermove", { bubbles: true })),
+  );
+  expect(block.dataset.hovered).toBeUndefined();
+  vi.mocked(adapter.goTo).mockClear();
+  await act(async () => fixture.ready!.next());
+  expect(adapter.goTo).toHaveBeenCalledWith({ type: "epub", href: "b.xhtml" });
 });

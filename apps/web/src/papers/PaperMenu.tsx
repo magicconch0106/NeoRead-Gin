@@ -280,6 +280,14 @@ export function PaperMenuItems({
                 <FileDown />
                 导出带批注的译文 PDF
               </K.Item>
+              <K.Item
+                onClick={() =>
+                  void exportTranslatedPDFWithToast(one, "bilingual")
+                }
+              >
+                <FileDown />
+                导出逐段对照译文 PDF
+              </K.Item>
             </>
           )}
           <K.Item onClick={() => actions.move(one)}>

@@ -204,3 +204,39 @@ it("closes a pinned window with Escape", async () => {
   expect(document.querySelector(".link-preview-window")).toBeNull();
   expect(dismiss).toHaveBeenCalledOnce();
 });
+
+it("opens autoPin previews directly in a floating corner window and updates in place on new clicks", async () => {
+  await show({
+    ...preview,
+    page: 45,
+    title: "图 2 · 第 45 页",
+    autoPin: true,
+  });
+  const win = document.querySelector<HTMLElement>(".link-preview-window")!;
+  expect(win).not.toBeNull();
+  expect(win.textContent).toContain("图 2 · 第 45 页");
+
+  // User drags the floating window to a custom spot
+  const title = button("移动预览窗口");
+  const initialLeft = parseFloat(win.style.left);
+  await act(async () => pointer(title, "pointerdown", 100, 100));
+  await act(async () => pointer(title, "pointermove", 60, 120));
+  await act(async () => pointer(title, "pointerup", 60, 120));
+  const customLeft = parseFloat(win.style.left);
+  expect(customLeft).not.toBe(initialLeft);
+
+  // Clicking another citation (autoPin: true) updates content in place without losing custom position
+  await show({
+    ...preview,
+    page: 41,
+    image: "/ref.png",
+    title: "Hayek (1978) · 第 41 页",
+    captionText: "Hayek, Friedrich August. 1978. Law, legislation and liberty.",
+    autoPin: true,
+  });
+  expect(win.textContent).toContain("Hayek (1978) · 第 41 页");
+  expect(
+    document.querySelector(".link-preview-caption")?.textContent,
+  ).toContain("Law, legislation and liberty");
+  expect(parseFloat(win.style.left)).toBe(customLeft);
+});

@@ -77,14 +77,14 @@ export function ImagePreview({
         <div className="image-preview-scroll">
           {error ? (
             <p role="alert">图片暂时无法加载，请稍后重试。</p>
-          ) : (
+          ) : highResolution || !image.id.includes(":composite") ? (
             <img
               style={{ width: `${zoom * 100}%`, maxWidth: "none" }}
               src={highResolution || blockImageURL(documentId, image.id)}
               alt={image.caption || imageLabel(image)}
               onError={() => setError(true)}
             />
-          )}
+          ) : null}
         </div>
         <div className="image-preview-controls">
           <Button

@@ -1,4 +1,5 @@
-import { figureReferences } from "./readers/figure-references";
+import { authorYearReferences } from "./readers/author-year-citations";
+import { figureReferences, tableReferences } from "./readers/figure-references";
 import { createContext } from "react";
 import { toast } from "sonner";
 import type { Link, PhrasingContent, Root, Text } from "mdast";
@@ -41,18 +42,22 @@ export function remarkReadingCitations({ blockId }: { blockId?: string }) {
   };
 }
 function readingParts(value: string, blockId: string) {
-  const figures = figureReferences(value);
-  if (!figures.length) return citationParts(value, blockId);
+  const refs = [
+    ...figureReferences(value).map((f) => ({ ...f, kind: "figure" as const })),
+    ...tableReferences(value).map((t) => ({ ...t, kind: "table" as const })),
+  ].sort((a, b) => a.index - b.index);
+  if (!refs.length) return citationParts(value, blockId);
   const parts: PhrasingContent[] = [];
   let start = 0;
-  for (const figure of figures) {
-    const before = value.slice(start, figure.index);
+  for (const ref of refs) {
+    if (ref.index < start) continue;
+    const before = value.slice(start, ref.index);
     parts.push(...(citationParts(before, blockId) ?? [text(before)]), {
       type: "link",
-      url: citationHref(blockId, `figure:${figure.label}`),
-      children: [text(figure.text)],
+      url: citationHref(blockId, `${ref.kind}:${ref.label}`),
+      children: [text(ref.text)],
     });
-    start = figure.index + figure.text.length;
+    start = ref.index + ref.text.length;
   }
   const after = value.slice(start);
   parts.push(...(citationParts(after, blockId) ?? [text(after)]));
@@ -62,15 +67,37 @@ function citationParts(value: string, blockId: string) {
   const parts: PhrasingContent[] = [];
   let start = 0;
   for (const match of value.matchAll(citationPattern)) {
+    const before = value.slice(start, match.index);
     parts.push(
-      text(value.slice(start, match.index) + "["),
+      ...(authorYearParts(before, blockId) ?? [text(before)]),
+      text("["),
       ...citationList(match[1], blockId),
       text("]"),
     );
     start = match.index + match[0].length;
   }
-  if (!start) return;
-  parts.push(text(value.slice(start)));
+  if (!start) return authorYearParts(value, blockId);
+  const tail = value.slice(start);
+  parts.push(...(authorYearParts(tail, blockId) ?? [text(tail)]));
+  return parts.filter((part) => part.type !== "text" || part.value);
+}
+
+function authorYearParts(value: string, blockId: string) {
+  const refs = authorYearReferences(value);
+  if (!refs.length) return;
+  const parts: PhrasingContent[] = [];
+  let start = 0;
+  for (const ref of refs) {
+    if (ref.index < start) continue;
+    if (ref.index > start) parts.push(text(value.slice(start, ref.index)));
+    parts.push({
+      type: "link",
+      url: citationHref(blockId, ref.label),
+      children: [text(ref.text)],
+    });
+    start = ref.index + ref.text.length;
+  }
+  if (start < value.length) parts.push(text(value.slice(start)));
   return parts.filter((part) => part.type !== "text" || part.value);
 }
 /** "3–5, 8" links 3, 4, 5 and 8; separators between items stay as written. */

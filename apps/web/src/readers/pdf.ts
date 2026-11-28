@@ -538,6 +538,49 @@ export class PDFReaderAdapter implements ReaderAdapter {
     );
     this.viewport.reset();
   }
+  async fitSingleColumn(
+    paneWidth: number,
+    pageNumber = this.location.page,
+    stripMargins = false,
+  ): Promise<number | undefined> {
+    if (this.disposed || !this.pdf || paneWidth <= 64) return undefined;
+    if (!this.bodyTextSize) await this.measureBodyFontSize();
+    if (this.disposed || !this.pdf || !this.bodyTextSize) return undefined;
+    const clampedPage = Math.max(1, Math.min(this.pdf.numPages, pageNumber));
+    const pdfPage = await this.pdf.getPage(clampedPage);
+    if (this.disposed) return undefined;
+    const baseWidth = pdfPage.getViewport({ scale: 1 }).width;
+    if (!baseWidth || !Number.isFinite(baseWidth)) return undefined;
+    if (!stripMargins) {
+      const targetWidth = Math.min(Math.max(320, paneWidth - 80), 860);
+      const pixels = (this.bodyTextSize * targetWidth) / baseWidth;
+      return Math.round(Math.min(19, Math.max(15, pixels)) * 10) / 10;
+    }
+    const content = this.blockData.filter(
+      (block) =>
+        block.page === clampedPage &&
+        !isPDFPageDecoration(block) &&
+        (block.image || block.text.trim()) &&
+        Number.isFinite(block.bounds.x) &&
+        Number.isFinite(block.bounds.width) &&
+        block.bounds.width > 0 &&
+        block.bounds.x < 1 &&
+        block.bounds.x + block.bounds.width > 0,
+    );
+    const left = content.length
+      ? Math.max(0, Math.min(...content.map((b) => b.bounds.x)))
+      : 0;
+    const right = content.length
+      ? Math.min(
+          1,
+          Math.max(...content.map((b) => b.bounds.x + b.bounds.width)),
+        )
+      : 1;
+    const contentPts = baseWidth * Math.max(0.45, right - left);
+    const usableWidth = Math.min(Math.max(320, paneWidth - 64), 1120);
+    const pixels = (this.bodyTextSize * usableWidth) / contentPts;
+    return Math.round(Math.min(23, Math.max(16, pixels)) * 10) / 10;
+  }
   private onWheel = (event: WheelEvent) => {
     this.viewport.cancelAnimation();
     // Chromium reports trackpad pinch as Ctrl+wheel; macOS Cmd+wheel uses metaKey.
@@ -744,6 +787,109 @@ export class PDFReaderAdapter implements ReaderAdapter {
   ) {
     return this.linkPreview.previewLocation(location, anchor);
   }
+  async previewRegion(
+    options: import("@neoread/core").PDFPreviewRegionOptions,
+  ) {
+    let bounds = options.bounds;
+    let location = options.location;
+    if (options.textHint && this.pdf && !this.disposed) {
+      try {
+        const refined = await this.refineBibliographyBounds(
+          options.page,
+          options.bounds,
+          options.textHint,
+        );
+        if (refined) {
+          bounds = refined;
+          location = {
+            type: "pdf",
+            page: options.page,
+            x: refined.x,
+            y: refined.y,
+          };
+        }
+      } catch {
+        /* keep estimated bounds */
+      }
+    }
+    await this.linkPreview.showRegion({ ...options, bounds, location });
+  }
+  private async refineBibliographyBounds(
+    pageNum: number,
+    fallback: PDFBlock["bounds"],
+    hint: { surname: string; year: string },
+  ): Promise<PDFBlock["bounds"] | undefined> {
+    if (!this.pdf) return undefined;
+    const page = await this.pdf.getPage(pageNum);
+    const view = page.getViewport({ scale: 1 });
+    const content = await page.getTextContent();
+    const norm = (s: string) =>
+      s
+        .normalize("NFD")
+        .replace(/\p{M}+/gu, "")
+        .toLowerCase();
+    const targetSurname = norm(hint.surname);
+    const targetYear = hint.year.toLowerCase();
+
+    const rows: { y: number; text: string }[] = [];
+    for (const item of content.items) {
+      if (!("str" in item) || !item.str.trim()) continue;
+      const [, vy] = view.convertToViewportPoint(
+        item.transform[4],
+        item.transform[5],
+      );
+      const yFrac = Math.max(0, Math.min(1, (vy - 10) / view.height));
+      const existing = rows.find((r) => Math.abs(r.y - yFrac) < 0.008);
+      if (existing) existing.text += ` ${item.str}`;
+      else rows.push({ y: yFrac, text: item.str });
+    }
+    rows.sort((a, b) => a.y - b.y);
+    if (!rows.length) return undefined;
+
+    let matchedIdx = -1;
+    let bestDist = Infinity;
+    for (let i = 0; i < rows.length; i++) {
+      const rowNorm = norm(rows[i].text.trim());
+      const windowNorm = `${rowNorm} ${norm(rows[i + 1]?.text ?? "")}`;
+      const hasYear =
+        windowNorm.includes(targetYear) ||
+        windowNorm.includes(targetYear.slice(0, 4));
+      if (!hasYear) continue;
+      const startsAuthor =
+        rowNorm.startsWith(targetSurname) ||
+        (rowNorm.includes(targetSurname) && rowNorm.indexOf(targetSurname) < 8);
+      const isDashRepeat =
+        /^[\s.—–_-]*\b(?:18|19|20)\d{2}[a-d]?\b/.test(rowNorm) &&
+        rowNorm.includes(targetYear);
+      if (!startsAuthor && !isDashRepeat) continue;
+      const dist = Math.abs(rows[i].y - fallback.y);
+      if (dist < bestDist) {
+        bestDist = dist;
+        matchedIdx = i;
+      }
+    }
+    if (matchedIdx < 0) return undefined;
+
+    const startY = Math.max(0, rows[matchedIdx].y - 0.012);
+    let endY = Math.min(1, startY + 0.14);
+    for (let k = matchedIdx + 1; k < Math.min(rows.length, matchedIdx + 8); k++) {
+      const nextText = rows[k].text.trim();
+      const looksNewEntry =
+        /^(?:[\p{Lu}][\p{Ll}\p{M}'’-]+,\s+[\p{Lu}]|[—–_-]{2,}|\.\s*(?:18|19|20)\d{2})/u.test(
+          nextText,
+        ) && rows[k].y - rows[matchedIdx].y > 0.02;
+      if (looksNewEntry) {
+        endY = Math.min(1, rows[k].y + 0.014);
+        break;
+      }
+    }
+    return {
+      x: fallback.x,
+      y: startY,
+      width: fallback.width,
+      height: Math.max(0.065, Math.min(0.24, endY - startY)),
+    };
+  }
   hideCitationPreview() {
     this.linkPreview.hide();
   }
@@ -777,14 +923,18 @@ export class PDFReaderAdapter implements ReaderAdapter {
     blockId: string,
     signal: AbortSignal,
     width?: number,
+    boundsOverride?: PDFBlock["bounds"],
   ): Promise<Blob> {
-    const block = this.blockData.find((item) => item.id === blockId);
+    const baseId = blockId.includes(":") ? blockId.split(":")[0] : blockId;
+    const block = this.blockData.find(
+      (item) => item.id === blockId || item.id === baseId,
+    );
     if (!block || !this.pdf || this.disposed) throw new Error("图片位置不可用");
     signal.throwIfAborted();
     const page = await this.pdf.getPage(block.page);
     signal.throwIfAborted();
     const base = page.getViewport({ scale: 1 });
-    const bounds = block.bounds;
+    const bounds = boundsOverride ?? block.bounds;
     const area = base.width * bounds.width * base.height * bounds.height;
     const scale = Math.min(
       6,

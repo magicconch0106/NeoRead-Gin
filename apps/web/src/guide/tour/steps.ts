@@ -412,7 +412,7 @@ export const tourSteps: TourStep[] = [
           }
         : {
             title: "切换阅读模式",
-            body: "在「仅原文」「原文译文」「仅译文」之间切换。对照模式下悬停句子，两侧对应高亮。",
+            body: "在「仅原文」「原文译文」「逐段对照」「仅译文」之间切换。对照模式下悬停句子，对应句联动高亮。",
             click: [readingModes],
             pointer: { gesture: "hover", target: readingModes },
             advanceOn: readingModes,

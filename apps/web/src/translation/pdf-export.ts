@@ -22,6 +22,10 @@ import { wrapText, validRect, type Rect } from "./pdf-layout";
 import { splitLegacyCaptions } from "./pdf-captions";
 import { matchesSource } from "./pdf-content";
 import {
+  escapeFootnoteMarkdown,
+  mergeCompositeFigureBlocks,
+} from "./pdf-figures";
+import {
   compileFormula,
   drawFormula,
   prepareFlowPDFText,
@@ -40,6 +44,7 @@ import type {
   ExportIssue,
   PDFExportProgress,
   TranslatedPDF,
+  TranslatedPDFLayout,
 } from "./pdf-export-model";
 
 export type ExportCanvas = {
@@ -55,6 +60,7 @@ export type ExportOptions = {
   annotations?: Annotation[];
   answers?: Record<string, string>;
   navigation?: (pdf: PDFDocumentProxy) => Promise<TOCItem[]>;
+  layout?: TranslatedPDFLayout;
 };
 
 const PAGE_WIDTH = 595.28;
@@ -110,6 +116,16 @@ function stripFormulaDelimiters(markdown: string): string {
     blockMatch?.[4] ??
     trimmed
   ).trim();
+}
+
+function sameSourceAndTarget(translation: TranslationBlock): boolean {
+  if (!translation.sentences.length) return false;
+  const norm = (value: string) =>
+    value.replace(/[\s\u00ad*∗⋆⁎]+/gu, "").toLowerCase();
+  return (
+    norm(translation.sentences.map((s) => s.source).join("")) ===
+    norm(translation.sentences.map((s) => s.target).join(""))
+  );
 }
 
 async function textSpans(page: PDFPageProxy) {
@@ -208,6 +224,64 @@ function paragraphStyle(label: string) {
   }
 }
 
+function sourceParagraphStyle(label: string) {
+  switch (label) {
+    case "doc_title":
+      return {
+        size: 14.5,
+        lineHeightRatio: 1.35,
+        spaceBefore: 4,
+        spaceAfter: 3,
+        centered: true,
+        keepWithNext: true,
+        color: rgb(0.18, 0.18, 0.18),
+      };
+    case "paragraph_title":
+      return {
+        size: 11.5,
+        lineHeightRatio: 1.38,
+        spaceBefore: 11,
+        spaceAfter: 2.5,
+        centered: false,
+        keepWithNext: true,
+        color: rgb(0.2, 0.2, 0.2),
+      };
+    case "figure_title":
+    case "figure_caption":
+    case "table_caption":
+      return {
+        size: 9,
+        lineHeightRatio: 1.44,
+        spaceBefore: 3,
+        spaceAfter: 2.5,
+        centered: false,
+        keepWithNext: true,
+        color: rgb(0.32, 0.32, 0.32),
+      };
+    case "footnote":
+    case "aside_text":
+      return {
+        size: 8.75,
+        lineHeightRatio: 1.42,
+        spaceBefore: 2,
+        spaceAfter: 2,
+        centered: false,
+        keepWithNext: true,
+        color: rgb(0.35, 0.35, 0.35),
+      };
+    default:
+      return {
+        size: 10,
+        lineHeightRatio: 1.5,
+        spaceBefore: 2,
+        spaceAfter: 3.5,
+        centered: false,
+        keepWithNext: false,
+        color: rgb(0.24, 0.24, 0.24),
+      };
+  }
+}
+
 /**
  * Generates a pure single-column translated PDF matching NeoRead's "仅译文"
  * reading view: Chinese translations, original cropped figures/tables/charts,
@@ -227,8 +301,10 @@ export async function translatedPDF(
     annotations,
     answers,
     navigation,
+    layout = "translation",
   }: ExportOptions = {},
 ): Promise<TranslatedPDF> {
+  const bilingual = layout === "bilingual";
   signal?.throwIfAborted();
   onProgress?.({ phase: "preparing", done: 0, total: 0 });
   let task: PDFDocumentLoadingTask;
@@ -292,8 +368,10 @@ export async function translatedPDF(
     };
 
     const translatedBlocks: TranslatedBlockRecord[] = [];
+    const sourceBlocks: TranslatedBlockRecord[] = [];
     const figurePlacements: FigurePlacementRecord[] = [];
     const blockAnchors: BlockAnchorRecord[] = [];
+    const anchoredBlockIds = new Set<string>();
     let translatedCount = 0;
 
     for (let srcPageNum = 1; srcPageNum <= input.numPages; srcPageNum++) {
@@ -328,6 +406,7 @@ export async function translatedPDF(
         const recovered = splitLegacyCaptions(pageBlocks, spans, srcW, srcH);
         pageBlocks = recovered.blocks;
       }
+      pageBlocks = mergeCompositeFigureBlocks(pageBlocks);
 
       let renderedSurface: ExportCanvas | undefined;
       const renderScale = Math.min(2, Math.sqrt(6_000_000 / (srcW * srcH)));
@@ -450,15 +529,146 @@ export async function translatedPDF(
         return true;
       };
 
+      const drawSourceParagraph = (
+        block: PDFBlock,
+        translation?: TranslationBlock,
+        labelOverride?: string,
+      ): boolean => {
+        const rawSource = escapeFootnoteMarkdown(
+          translation?.status === "complete" && translation.sentences.length
+            ? translation.sentences
+                .map((s) => s.source.trim())
+                .filter(Boolean)
+                .join(" ")
+            : (block.caption || block.text).trim(),
+          block.label,
+        );
+        const content = prepareFlowPDFText(rawSource, fonts);
+        if (!content) return false;
+        const effectiveLabel = labelOverride ?? block.label;
+        const style = sourceParagraphStyle(effectiveLabel);
+        const lines = wrapText(
+          content.text,
+          CONTENT_WIDTH,
+          style.size,
+          content.measure,
+        );
+        if (!lines?.length) return false;
+
+        const baseLineHeight = style.size * style.lineHeightRatio;
+        ensurePage();
+        if (cursorY > MARGIN_TOP) cursorY += style.spaceBefore;
+        const minNeeded = baseLineHeight + (style.keepWithNext ? 32 : 0);
+        if (
+          cursorY > MARGIN_TOP &&
+          cursorY + minNeeded > PAGE_HEIGHT - MARGIN_BOTTOM
+        ) {
+          nextPage();
+        }
+
+        const lineRecords: TranslatedLineRecord[] = [];
+        let firstPage = outPageNum;
+        let firstTopY = cursorY;
+
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          const metrics = content.lineMetrics(line);
+          const lineH = Math.max(
+            baseLineHeight,
+            style.size * (metrics.ascent + metrics.descent + 0.18),
+          );
+          if (
+            cursorY > MARGIN_TOP &&
+            cursorY + lineH > PAGE_HEIGHT - MARGIN_BOTTOM
+          ) {
+            nextPage();
+          }
+          const page = ensurePage();
+          if (i === 0) {
+            firstPage = outPageNum;
+            firstTopY = cursorY;
+          }
+          const lineW = content.measure(line, style.size);
+          const shouldCenter =
+            style.centered ||
+            (effectiveLabel === "figure_title" &&
+              lines.length === 1 &&
+              lineW < CONTENT_WIDTH * 0.85);
+          const x =
+            MARGIN_X +
+            (shouldCenter ? Math.max(0, (CONTENT_WIDTH - lineW) / 2) : 0);
+          const baselineY = cursorY + style.size * metrics.ascent;
+          content.draw(
+            page,
+            line,
+            x,
+            PAGE_HEIGHT - baselineY,
+            style.size,
+            style.color,
+          );
+          lineRecords.push({
+            page: outPageNum,
+            pageWidth: PAGE_WIDTH,
+            pageHeight: PAGE_HEIGHT,
+            text: line,
+            x,
+            baselineY,
+            size: style.size,
+            lineHeight: lineH,
+            ascent: metrics.ascent,
+            descent: metrics.descent,
+            measurePrefix: (endIndex: number) =>
+              content.measure(line.slice(0, endIndex), style.size),
+          });
+          cursorY += lineH;
+        }
+
+        cursorY += translation ? style.spaceAfter : 7;
+        if (
+          translation?.status === "complete" &&
+          translation.sentences.length
+        ) {
+          sourceBlocks.push({
+            block,
+            sourcePage: srcPageNum,
+            sourceBounds: block.bounds,
+            translation: {
+              ...translation,
+              sentences: translation.sentences.map((s) => ({
+                ...s,
+                target: s.source,
+              })),
+            },
+            text: content.text,
+            lines: lineRecords,
+          });
+        }
+        if (!anchoredBlockIds.has(block.id)) {
+          anchoredBlockIds.add(block.id);
+          blockAnchors.push({
+            blockId: block.id,
+            sourcePage: srcPageNum,
+            sourceY: block.bounds.y,
+            outPage: firstPage,
+            outY: firstTopY / PAGE_HEIGHT,
+          });
+        }
+        return true;
+      };
+
       const drawTranslatedParagraph = (
         block: PDFBlock,
         translation: TranslationBlock,
         labelOverride?: string,
+        precededBySource = false,
       ): boolean => {
-        const joined = translation.sentences
-          .map((s) => s.target.trim())
-          .filter(Boolean)
-          .join(" ");
+        const joined = escapeFootnoteMarkdown(
+          translation.sentences
+            .map((s) => s.target.trim())
+            .filter(Boolean)
+            .join(" "),
+          block.label,
+        );
         const content = prepareFlowPDFText(joined, fonts);
         if (!content) return false;
         const style = paragraphStyle(labelOverride ?? block.label);
@@ -472,7 +682,9 @@ export async function translatedPDF(
 
         const baseLineHeight = style.size * style.lineHeightRatio;
         ensurePage();
-        if (cursorY > MARGIN_TOP) cursorY += style.spaceBefore;
+        if (cursorY > MARGIN_TOP && !precededBySource) {
+          cursorY += style.spaceBefore;
+        }
         const minNeeded = baseLineHeight + (style.keepWithNext ? 26 : 0);
         if (
           cursorY > MARGIN_TOP &&
@@ -538,7 +750,7 @@ export async function translatedPDF(
           cursorY += lineH;
         }
 
-        cursorY += style.spaceAfter;
+        cursorY += style.spaceAfter + (precededBySource ? 2.5 : 0);
         translatedBlocks.push({
           block,
           sourcePage: srcPageNum,
@@ -547,13 +759,16 @@ export async function translatedPDF(
           text: content.text,
           lines: lineRecords,
         });
-        blockAnchors.push({
-          blockId: block.id,
-          sourcePage: srcPageNum,
-          sourceY: block.bounds.y,
-          outPage: firstPage,
-          outY: firstTopY / PAGE_HEIGHT,
-        });
+        if (!anchoredBlockIds.has(block.id)) {
+          anchoredBlockIds.add(block.id);
+          blockAnchors.push({
+            blockId: block.id,
+            sourcePage: srcPageNum,
+            sourceY: block.bounds.y,
+            outPage: firstPage,
+            outY: firstTopY / PAGE_HEIGHT,
+          });
+        }
         return true;
       };
 
@@ -562,7 +777,9 @@ export async function translatedPDF(
           signal?.throwIfAborted();
           const baseId = block.id.endsWith(":asset")
             ? block.id.slice(0, -6)
-            : block.id;
+            : block.id.endsWith(":composite")
+              ? block.id.slice(0, -10)
+              : block.id;
           const translation = byId.get(baseId);
 
           // 1. Standalone display/inline formula block
@@ -667,28 +884,47 @@ export async function translatedPDF(
             }
             await drawEmbeddedCrop(baseId, block.bounds);
             // If this block still carries an unsplit caption with a completed translation,
-            // render its translated Chinese caption directly underneath.
+            // render its caption directly underneath.
             if (
               !block.id.endsWith(":asset") &&
               block.caption?.trim() &&
               translation?.status === "complete" &&
               translation.sentences.length
             ) {
-              if (drawTranslatedParagraph(block, translation, "figure_title")) {
+              const drewSrc =
+                bilingual &&
+                !sameSourceAndTarget(translation) &&
+                drawSourceParagraph(block, translation, "figure_title");
+              if (
+                drawTranslatedParagraph(
+                  block,
+                  translation,
+                  "figure_title",
+                  drewSrc,
+                )
+              ) {
                 translatedCount++;
               }
             }
             continue;
           }
 
-          // 3. Skip untranslated English bibliography items (`reference`, `reference_content`)
+          // 3. Untranslated English bibliography items (`reference`, `reference_content`)
           if (REFERENCE_LABELS.has(block.label)) {
             if (
               translation?.status === "complete" &&
               translation.sentences.length
             ) {
-              if (drawTranslatedParagraph(block, translation))
+              const drewSrc =
+                bilingual &&
+                !sameSourceAndTarget(translation) &&
+                drawSourceParagraph(block, translation);
+              if (
+                drawTranslatedParagraph(block, translation, undefined, drewSrc)
+              )
                 translatedCount++;
+            } else if (bilingual && block.text.trim()) {
+              drawSourceParagraph(block);
             }
             continue;
           }
@@ -732,7 +968,13 @@ export async function translatedPDF(
             });
             continue;
           }
-          if (drawTranslatedParagraph(block, translation)) {
+          const drewSource =
+            bilingual &&
+            !sameSourceAndTarget(translation) &&
+            drawSourceParagraph(block, translation);
+          if (
+            drawTranslatedParagraph(block, translation, undefined, drewSource)
+          ) {
             translatedCount++;
           }
         }
@@ -788,6 +1030,7 @@ export async function translatedPDF(
       sourcePDF: input,
       bytes: rawBytes,
       translatedBlocks,
+      sourceBlocks,
       figurePlacements,
       blockAnchors,
       annotations,

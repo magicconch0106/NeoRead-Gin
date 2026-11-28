@@ -66,6 +66,12 @@ export function BookMenuItems({
             <FileDown />
             导出带批注的译文 PDF
           </K.Item>
+          <K.Item
+            onClick={() => void exportTranslatedPDFWithToast(doc, "bilingual")}
+          >
+            <FileDown />
+            导出逐段对照译文 PDF
+          </K.Item>
         </>
       )}
       {actions.move && (doc.type === "pdf" || doc.library === "papers") && (

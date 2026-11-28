@@ -209,3 +209,23 @@ it("renders bracketed figure references as one keyboard-accessible link", async 
     await act(async () => root.unmount());
   }
 });
+
+it("links tables, appendix figures, and economics author-year citations without touching math or code", () => {
+  const value =
+    "见 Table 1、Figure A.9，以及（例如 Hayek 1978；North et al. 1990）与 Sun和Abraham（2021），公式 `(Hayek 1978)` 不变。";
+  const tree = run(
+    paragraph(
+      { type: "text", value: "见 Table 1、Figure A.9，以及（例如 Hayek 1978；North et al. 1990）与 Sun和Abraham（2021），公式 " },
+      { type: "inlineCode", value: "(Hayek 1978)" },
+    ),
+  );
+  expect(citations(tree)).toEqual([
+    "table:1",
+    "figure:a.9",
+    "cite:Hayek@1978",
+    "cite:North*@1990",
+    "cite:Sun|Abraham@2021",
+  ]);
+  expect(plain(tree)).toContain("(Hayek 1978)");
+  expect(value).toBeTruthy();
+});

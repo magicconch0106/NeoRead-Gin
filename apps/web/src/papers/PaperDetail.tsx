@@ -498,7 +498,7 @@ function AuthorChips({ doc }: { doc: Document }) {
     setEditing(null);
     const parsed = parseCreators(text.replace(/\n/g, " "));
     const next = [...creators];
-    next.splice(index, 1, ...parsed.slice(0, 1));
+    next.splice(index, 1, ...parsed);
     if (index < creators.length || parsed.length) save(next);
   };
   const input = (index: number, value: string) => (
@@ -506,7 +506,7 @@ function AuthorChips({ doc }: { doc: Document }) {
       key={`edit-${index}`}
       autoFocus
       aria-label={index < creators.length ? "编辑作者" : "添加作者"}
-      placeholder="姓, 名"
+      placeholder="姓, 名（可粘贴多位作者）"
       defaultValue={value}
       className="paper-chip-input"
       onKeyDown={(e) => {

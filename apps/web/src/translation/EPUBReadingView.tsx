@@ -39,7 +39,9 @@ import { defaultTheme } from "@neoread/core";
 import { translationFont } from "../appearance";
 import "./translation.css";
 
-type Mode = "source" | "parallel" | "translation";
+type Mode = "source" | "parallel" | "interleaved" | "translation";
+const isSingleColumn = (mode: Mode) =>
+  mode === "translation" || mode === "interleaved";
 export function EPUBReadingView({
   document: doc,
   active = true,
@@ -55,8 +57,11 @@ export function EPUBReadingView({
   processing?: Processing;
   pageNavigation?: ReactNode;
 }) {
-  const [mode, setMode] = useState<Mode>("source");
-  const { swapped, sourceWidth } = readerLayout(theme.readerLayout);
+  const layoutPref = readerLayout(theme.readerLayout);
+  const [mode, setMode] = useState<Mode>(
+    () => layoutPref.readingMode ?? "source",
+  );
+  const { swapped, sourceWidth } = layoutPref;
   const [blocks, setBlocks] = useState<EPUBReadingBlock[]>([]);
   const [chapter, setChapter] = useState(
     doc.progress?.type === "epub" ? doc.progress.href.split("#")[0] : "",
@@ -120,6 +125,7 @@ export function EPUBReadingView({
     }
   };
   const hover = (origin: "source" | "translation", blockId?: string) => {
+    if (live.current.mode === "interleaved" && blockId) return;
     if (!blockId && hoverOwner.current !== origin) return;
     hoverOwner.current = blockId ? origin : undefined;
     setHoveredBlock(blockId);
@@ -159,7 +165,7 @@ export function EPUBReadingView({
     const current = live.current.mode;
     const cancelled = () => operation !== motion.operation;
     void Promise.all([
-      current !== "translation"
+      !isSingleColumn(current)
         ? engine.current?.focusBlock?.(
             id,
             current === "parallel" ? "parallel" : "source",
@@ -217,8 +223,7 @@ export function EPUBReadingView({
   const go = async (location: DocumentLocation) => {
     if (location.type !== "epub") return;
     clear();
-    side.current =
-      live.current.mode === "translation" ? "translation" : "source";
+    side.current = isSingleColumn(live.current.mode) ? "translation" : "source";
     await engine.current?.goTo(location);
     const resolved = engine.current?.getLocation();
     if (
@@ -233,7 +238,7 @@ export function EPUBReadingView({
     if (block) follow(block.id);
   };
   const step = async (direction: number) => {
-    if (live.current.mode !== "translation") {
+    if (!isSingleColumn(live.current.mode)) {
       side.current = "source";
       clear();
       return direction > 0
@@ -389,7 +394,7 @@ export function EPUBReadingView({
       );
       if (block) {
         if (
-          live.current.mode === "translation" &&
+          isSingleColumn(live.current.mode) &&
           block.location.href !== live.current.chapter
         )
           void engine.current
@@ -406,7 +411,8 @@ export function EPUBReadingView({
     hover("source");
     hover("translation");
     setMode(value);
-    side.current = value === "translation" ? "translation" : "source";
+    updateReaderLayout({ readingMode: value });
+    side.current = isSingleColumn(value) ? "translation" : "source";
     const target = position.current;
     cancelAnimationFrame(modeFrame.current);
     modeFrame.current = requestAnimationFrame(() => {
@@ -433,13 +439,18 @@ export function EPUBReadingView({
         <TabsList>
           <TabsTrigger value="source">仅原文</TabsTrigger>
           <TabsTrigger value="parallel">原文译文</TabsTrigger>
+          <TabsTrigger value="interleaved">逐段对照</TabsTrigger>
           <TabsTrigger value="translation">仅译文</TabsTrigger>
         </TabsList>
       </Tabs>
     </div>
   );
   return (
-    <div className="epub-reading" data-theme={theme.mode}>
+    <div
+      className="epub-reading"
+      data-reading-mode={mode}
+      data-theme={theme.mode}
+    >
       {toolbarHost ? createPortal(toolbar, toolbarHost) : toolbar}
       <TranslationPanes
         mode={mode}
@@ -739,15 +750,25 @@ export function EPUBReadingView({
                     focusBlock(block.id, "translation");
                   }
                 }}
-                onPointerEnter={(event) => {
-                  if (!event.buttons && !dragging.current)
-                    hover("translation", block.id);
-                }}
-                onPointerMove={(event) => {
-                  if (!event.buttons && !dragging.current)
-                    hover("translation", block.id);
-                }}
-                onPointerLeave={() => hover("translation")}
+                onPointerEnter={
+                  mode === "interleaved"
+                    ? undefined
+                    : (event) => {
+                        if (!event.buttons && !dragging.current)
+                          hover("translation", block.id);
+                      }
+                }
+                onPointerMove={
+                  mode === "interleaved"
+                    ? undefined
+                    : (event) => {
+                        if (!event.buttons && !dragging.current)
+                          hover("translation", block.id);
+                      }
+                }
+                onPointerLeave={
+                  mode === "interleaved" ? undefined : () => hover("translation")
+                }
               >
                 <TranslationText
                   block={block}
@@ -756,10 +777,16 @@ export function EPUBReadingView({
                       ? publicationURL(doc.id, block.image)
                       : undefined
                   }
+                  onPreview={
+                    block.image && events.epubBlockAction
+                      ? () => events.epubBlockAction?.(block, "preview")
+                      : undefined
+                  }
                   documentId={doc.id}
                   translation={translations.find((t) => t.blockId === block.id)}
                   paused={processing?.enabled === false}
                   retry={() => retry(block.id)}
+                  interleaved={mode === "interleaved"}
                 />
               </section>
             ))}

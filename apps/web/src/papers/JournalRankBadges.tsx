@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { api } from "@neoread/api";
+import { isPreprintVenueOrDOI } from "./working-paper-metadata";
 import type {
   JournalRankBadge,
   JournalRankConfig,
@@ -46,7 +47,13 @@ export function JournalRankBadges({
     lastRefresh.current = { refreshRevision, retry };
     setResult(null);
     setError("");
-    if (!config?.enabled || !config.hasKey || !venue.trim()) return;
+    if (
+      !config?.enabled ||
+      !config.hasKey ||
+      !venue.trim() ||
+      isPreprintVenueOrDOI(venue)
+    )
+      return;
     let cancelled = false;
     let observer: IntersectionObserver | undefined;
     const run = () => {

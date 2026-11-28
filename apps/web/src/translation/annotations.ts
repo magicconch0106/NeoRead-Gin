@@ -44,10 +44,13 @@ export function translatedAnnotationRanges(
         )
       )
         continue;
-      const node = Array.from(
+      const blockNode = Array.from(
         host.querySelectorAll<HTMLElement>("[data-translation-block]"),
       ).find((n) => n.dataset.translationBlock === part.blockId);
-      if (!node) continue;
+      if (!blockNode) continue;
+      const node =
+        blockNode.querySelector<HTMLElement>(".translation-sentences") ??
+        blockNode;
       if (part.recovered) {
         const range = recoveredAnnotationRange(
           node,
@@ -60,6 +63,115 @@ export function translatedAnnotationRanges(
       const range = textRange(node, part.start, part.end);
       if (range?.toString().trim() === part.quote.trim())
         result.push({ annotation, range });
+    }
+  }
+  return result;
+}
+
+/** Matches source-side annotations against interleaved original paragraphs. */
+export function interleavedSourceAnnotationRanges(
+  host: HTMLElement,
+  annotations: Annotation[],
+) {
+  const result: { annotation: Annotation; range: Range }[] = [];
+  const blockNodes = Array.from(
+    host.querySelectorAll<HTMLElement>("[data-translation-block]"),
+  );
+  if (!blockNodes.some((n) => n.querySelector("[data-interleaved-source]")))
+    return result;
+
+  const findPhraseRange = (
+    root: HTMLElement,
+    quote: string,
+  ): Range | undefined => {
+    const trimmed = quote.trim();
+    if (!trimmed) return;
+    const full = root.textContent ?? "";
+    const direct = full.indexOf(trimmed);
+    if (direct >= 0) return textRange(root, direct, direct + trimmed.length);
+    const normalize = (value: string) => {
+      let text = "";
+      const offsets: number[] = [];
+      for (let i = 0; i < value.length; i++) {
+        if (/[\s\u00ad]/u.test(value[i])) continue;
+        text += value[i].toLowerCase();
+        offsets.push(i);
+      }
+      return { text, offsets };
+    };
+    const normFull = normalize(full);
+    const normNeedle = normalize(trimmed).text;
+    if (!normNeedle) return;
+    const pos = normFull.text.indexOf(normNeedle);
+    if (pos >= 0) {
+      return textRange(
+        root,
+        normFull.offsets[pos],
+        normFull.offsets[pos + normNeedle.length - 1] + 1,
+      );
+    }
+  };
+
+  for (const annotation of annotations) {
+    if (annotation.location.translation || annotation.kind === "bookmark")
+      continue;
+    if (annotation.location.type === "pdf") {
+      const anchors = annotation.location.sourceAnchors;
+      if (anchors?.length) {
+        for (const anchor of anchors) {
+          const blockNode = blockNodes.find(
+            (n) => n.dataset.translationBlock === anchor.blockId,
+          );
+          const srcRoot = blockNode?.querySelector<HTMLElement>(
+            "[data-interleaved-source]",
+          );
+          if (!srcRoot) continue;
+          const range =
+            findPhraseRange(srcRoot, annotation.quote) ??
+            findPhraseRange(srcRoot, anchor.source);
+          if (range) result.push({ annotation, range });
+        }
+        continue;
+      }
+      const quote = (
+        annotation.quote ||
+        annotation.location.quote ||
+        ""
+      ).trim();
+      if (!quote) continue;
+      for (const blockNode of blockNodes) {
+        const srcRoot = blockNode.querySelector<HTMLElement>(
+          "[data-interleaved-source]",
+        );
+        if (!srcRoot) continue;
+        const range = findPhraseRange(srcRoot, quote);
+        if (range) {
+          result.push({ annotation, range });
+          break;
+        }
+      }
+    } else if (annotation.location.type === "epub") {
+      const quote = (
+        annotation.quote ||
+        annotation.location.quote ||
+        ""
+      ).trim();
+      if (!quote) continue;
+      const epubBlockId = annotation.location.blockId;
+      const candidates = epubBlockId
+        ? blockNodes.filter((n) => n.dataset.translationBlock === epubBlockId)
+        : blockNodes;
+      for (const blockNode of candidates) {
+        const srcRoot = blockNode.querySelector<HTMLElement>(
+          "[data-interleaved-source]",
+        );
+        if (!srcRoot) continue;
+        const range = findPhraseRange(srcRoot, quote);
+        if (range) {
+          result.push({ annotation, range });
+          break;
+        }
+      }
     }
   }
   return result;
@@ -78,7 +190,10 @@ export function paintTranslatedAnnotations(
     globalThis as unknown as { Highlight?: new (...ranges: Range[]) => unknown }
   ).Highlight;
   if (!api || !Highlight) return;
-  const ranges = translatedAnnotationRanges(host, annotations, translations);
+  const ranges = [
+    ...translatedAnnotationRanges(host, annotations, translations),
+    ...interleavedSourceAnnotationRanges(host, annotations),
+  ];
   api.set(
     "neoread-translation-marks",
     new Highlight(

@@ -1,5 +1,6 @@
 import { confirmLargePaper } from "../LargePaperDialog";
 import { api, RequestError } from "@neoread/api";
+import { enrichWorkingPaperFromPDF } from "./working-paper-metadata";
 import type {
   Document,
   PaperLibraryPreferences,
@@ -305,10 +306,30 @@ export async function importReference(ref: string, target = "") {
 
 export async function lookupPaper(doc: Document, byTitle = false) {
   try {
-    await api.lookupMetadata(doc.id, byTitle);
+    const updated = await api.lookupMetadata(doc.id, byTitle);
+    if (
+      updated?.id &&
+      (!updated.metadata?.creators?.length || !updated.metadata?.date)
+    ) {
+      await enrichWorkingPaperFromPDF(updated, {
+        repairMangledCreators: true,
+      }).catch(() => false);
+    }
     await refreshLibrary().catch(() => {});
     toast.success("已更新论文信息");
   } catch (e) {
+    try {
+      const enriched = await enrichWorkingPaperFromPDF(doc, {
+        repairMangledCreators: true,
+      });
+      if (enriched) {
+        await refreshLibrary().catch(() => {});
+        toast.success("已从预印本首页识别作者、年份与出处");
+        return;
+      }
+    } catch {
+      /* fall through to original lookup error */
+    }
     toast.error((e as Error).message);
   }
 }

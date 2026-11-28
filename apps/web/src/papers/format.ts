@@ -4,6 +4,7 @@ import type {
   PaperItemType,
   PaperMetadata,
 } from "@neoread/core";
+import { splitAuthorStringToCreators } from "./working-paper-metadata";
 
 export const itemTypeLabels: Record<PaperItemType, string> = {
   journal: "期刊论文",
@@ -25,8 +26,8 @@ export const creatorName = (c: Creator) =>
 export function paperCreators(doc: Pick<Document, "author" | "metadata">) {
   if (doc.metadata.creators?.length) return doc.metadata.creators;
   return doc.author
-    .split(/\s*[,;，；]\s*|\s+and\s+/)
-    .map((name) => name.trim())
+    .split(/\s*[,;，；、]\s*|\s+and\s+/)
+    .map((name) => name.replace(/[*∗†‡]+$/u, "").trim())
     .filter(Boolean)
     .map((name): Creator => ({ name }));
 }
@@ -74,8 +75,10 @@ export function paperByline(doc: Pick<Document, "author" | "metadata">) {
     .join(" · ");
 }
 
-/** One author per line: "Family, Given", "Given Family" or a single name. */
+/** One author per line, or semicolon/comma/space-separated multi-author paste. */
 export function parseCreators(text: string): Creator[] {
+  const multi = splitAuthorStringToCreators(text);
+  if (multi.length) return multi;
   return text
     .split("\n")
     .map((line) => line.trim())

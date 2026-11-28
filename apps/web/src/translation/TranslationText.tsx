@@ -5,6 +5,7 @@ import { Button } from "@neoread/ui/components/button";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { ReadingLinkNavigation } from "../reading-links";
 import { ErrorBoundary } from "../ErrorBoundary";
+import { escapeFootnoteMarkdown } from "./pdf-figures";
 const FormulaFragment = lazy(() => import("./FormulaFragment"));
 const Markdown = lazy(() =>
   import("../chat/MessageMarkdown").then((module) => ({
@@ -41,10 +42,12 @@ function BlockImage({
   src,
   alt,
   render,
+  onPreview,
 }: {
   src: string;
   alt: string;
   render?: (width: number) => Promise<string>;
+  onPreview?: () => void;
 }) {
   const [sharp, setSharp] = useState<{ url: string; width: number }>();
   const mounted = useRef(false);
@@ -57,10 +60,19 @@ function BlockImage({
   return (
     <img
       className="translation-image"
+      data-previewable={onPreview ? "true" : undefined}
       src={sharp?.url ?? src}
       width={sharp?.width}
       alt={alt}
       loading="lazy"
+      onClick={
+        onPreview
+          ? (event) => {
+              event.stopPropagation();
+              onPreview();
+            }
+          : undefined
+      }
       onLoad={(event) => {
         if (sharp || !render) return;
         const image = event.currentTarget;
@@ -72,6 +84,63 @@ function BlockImage({
           })
           .catch(() => {});
       }}
+    />
+  );
+}
+
+/** Renders a figure/composite region directly from the original PDF page. */
+function DirectPDFImage({
+  alt,
+  render,
+  onPreview,
+}: {
+  alt: string;
+  render: (width: number) => Promise<string>;
+  onPreview?: () => void;
+}) {
+  const [url, setURL] = useState<string>();
+  const hostRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let alive = true;
+    const width = Math.max(
+      960,
+      Math.ceil(
+        (hostRef.current?.clientWidth || 720) * (window.devicePixelRatio || 1),
+      ),
+    );
+    render(width)
+      .then((next) => {
+        if (alive) setURL(next);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [render]);
+  if (!url) {
+    return (
+      <div
+        ref={hostRef}
+        className="translation-image-placeholder"
+        aria-busy="true"
+      />
+    );
+  }
+  return (
+    <img
+      className="translation-image"
+      data-previewable={onPreview ? "true" : undefined}
+      src={url}
+      alt={alt}
+      loading="lazy"
+      onClick={
+        onPreview
+          ? (event) => {
+              event.stopPropagation();
+              onPreview();
+            }
+          : undefined
+      }
     />
   );
 }
@@ -98,6 +167,8 @@ function TranslationContent({
   onCitation,
   imageURL,
   renderImage,
+  onPreview,
+  interleaved = false,
 }: {
   // PDF blocks and EPUB paragraphs share these fields.
   block: Pick<PDFBlock, "id" | "label" | "text" | "image" | "caption"> &
@@ -114,23 +185,36 @@ function TranslationContent({
   imageURL?: string;
   /** Replaces the low-resolution layout crop with a render sized for display. */
   renderImage?: (blockId: string, width: number) => Promise<string>;
+  /** Opens the full-resolution zoomable figure viewer when clicked. */
+  onPreview?: () => void;
+  /** Renders the original paragraph above its translation in one column. */
+  interleaved?: boolean;
 }) {
   const formula = ["display_formula", "inline_formula"].includes(block.label);
   const idle = translation?.status === "idle";
   const halted = paused && translation?.status === "pending";
   const asset =
     !!block.image ||
-    ["algorithm", "table", "chart", "image"].includes(block.label);
+    ["algorithm", "table", "chart", "image", "figure"].includes(block.label);
+  const altText = block.caption || block.text || block.label;
   const image = block.image ? (
     <BlockImage
       key={`${block.id}:${block.image}`}
       src={imageURL ?? blockImageURL(documentId, block.id, block.image)}
-      alt={block.caption || block.text || block.label}
+      alt={altText}
+      onPreview={formula ? undefined : onPreview}
       render={
         imageURL || !renderImage
           ? undefined
           : (width) => renderImage(block.id, width)
       }
+    />
+  ) : asset && renderImage ? (
+    <DirectPDFImage
+      key={`${block.id}:direct`}
+      alt={altText}
+      onPreview={formula ? undefined : onPreview}
+      render={(width) => renderImage(block.id, width)}
     />
   ) : null;
   const formulaFallback = image || <MessageMarkdown content={block.text} />;
@@ -189,51 +273,105 @@ function TranslationContent({
       "number",
     ].includes(block.label) ||
     (asset && !block.caption);
+  const sourceText = escapeFootnoteMarkdown(
+    (block.caption || block.text).trim(),
+    block.label,
+  );
+  const normalizeCompare = (value: string) =>
+    value.replace(/[\s\u00ad*∗⋆⁎]+/gu, "").toLowerCase();
+  const sameAsTarget =
+    translation?.status === "complete" &&
+    translation.sentences.length > 0 &&
+    normalizeCompare(translation.sentences.map((s) => s.source).join("")) ===
+      normalizeCompare(translation.sentences.map((s) => s.target).join(""));
+  const showInterleavedSource =
+    interleaved && !preserve && !!sourceText && !sameAsTarget;
+  const interleavedSource = showInterleavedSource ? (
+    <div className="translation-interleaved-source" data-interleaved-source>
+      {translation?.status === "complete" && translation.sentences.length ? (
+        translation.sentences.map((sentence, i) => (
+          <div
+            key={i}
+            className="translation-source-sentence"
+            data-source-sentence={i}
+          >
+            <MessageMarkdown
+              content={
+                i === 0
+                  ? escapeFootnoteMarkdown(sentence.source, block.label)
+                  : sentence.source
+              }
+              blockId={block.id}
+              onCitation={onCitation}
+            />
+          </div>
+        ))
+      ) : (
+        <MessageMarkdown
+          content={sourceText}
+          blockId={block.id}
+          onCitation={onCitation}
+        />
+      )}
+    </div>
+  ) : null;
+  const translatedSentences =
+    translation?.status === "complete" ? (
+      <div
+        className="translation-sentences"
+        data-interleaved-target={showInterleavedSource || undefined}
+      >
+        {translation.sentences.map((sentence, i) => (
+          <div
+            key={i}
+            className="translation-sentence"
+            data-sentence={i}
+            data-linked={linked.includes(i) || undefined}
+          >
+            <MessageMarkdown
+              content={
+                i === 0
+                  ? escapeFootnoteMarkdown(sentence.target, block.label)
+                  : sentence.target
+              }
+              blockId={block.id}
+              onCitation={onCitation}
+            />
+          </div>
+        ))}
+      </div>
+    ) : null;
   return (
     <>
       {image}
+      {interleavedSource}
       {preserve ? (
         !asset && (
           <MessageMarkdown
-            content={block.text}
+            content={escapeFootnoteMarkdown(block.text, block.label)}
             blockId={block.id}
             onCitation={onCitation}
           />
         )
-      ) : translation?.status === "complete" ? (
-        <div className="translation-sentences">
-          {translation.sentences.map((sentence, i) => (
-            <div
-              key={i}
-              className="translation-sentence"
-              data-sentence={i}
-              data-linked={linked.includes(i) || undefined}
-            >
-              <MessageMarkdown
-                content={sentence.target}
-                blockId={block.id}
-                onCitation={onCitation}
-              />
-            </div>
-          ))}
-        </div>
       ) : (
-        <div className="translation-pending" role="status">
-          <span>
-            {translation?.status === "failed"
-              ? translation.error || "此段翻译失败"
-              : idle
-                ? "未翻译"
-                : halted
-                  ? "翻译已暂停"
-                  : "正在翻译中…"}
-          </span>
-          {(translation?.status === "failed" || idle) && (
-            <Button variant="ghost" size="sm" onClick={retry}>
-              {idle ? "翻译此段" : "重试此段"}
-            </Button>
-          )}
-        </div>
+        translatedSentences ?? (
+          <div className="translation-pending" role="status">
+            <span>
+              {translation?.status === "failed"
+                ? translation.error || "此段翻译失败"
+                : idle
+                  ? "未翻译"
+                  : halted
+                    ? "翻译已暂停"
+                    : "正在翻译中…"}
+            </span>
+            {(translation?.status === "failed" || idle) && (
+              <Button variant="ghost" size="sm" onClick={retry}>
+                {idle ? "翻译此段" : "重试此段"}
+              </Button>
+            )}
+          </div>
+        )
       )}
     </>
   );

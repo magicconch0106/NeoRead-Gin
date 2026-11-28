@@ -740,3 +740,121 @@ it("handles rotated source pages when cropping figures and extracting captions",
   const result = await run(f);
   expect(result.translated).toBe(4);
 });
+
+it("exports bilingual paragraph-by-paragraph PDF with source above translation and anchors source marks onto English text", async () => {
+  const f = await fixture();
+  f.translations[0] = {
+    blockId: "left",
+    status: "complete",
+    sourceHash: createHash("sha256")
+      .update(`zh-CN:v1:${f.blocks[0].text.trim()}`)
+      .digest("hex"),
+    sentences: [
+      { source: "Original paragraph on the left.", target: "左侧第一句译文。" },
+      { source: "Second line of source text.", target: "第二句译文。" },
+    ],
+  };
+  const leftHash = f.translations[0].sourceHash;
+  const annotations: Annotation[] = [
+    {
+      id: "en-phrase",
+      documentId: "doc",
+      kind: "highlight",
+      quote: "Original paragraph",
+      note: "英文句高亮",
+      color: "#22c55e",
+      createdAt: "2026-11-27T03:00:00.000Z",
+      location: {
+        type: "pdf",
+        page: 1,
+        quote: "Original paragraph",
+        sourceAnchors: [
+          {
+            blockId: "left",
+            source: "Original paragraph on the left.",
+            page: 1,
+            bounds: f.blocks[0].bounds,
+          },
+        ],
+      },
+    },
+    {
+      id: "zh-phrase",
+      documentId: "doc",
+      kind: "note",
+      quote: "第二句译文。",
+      note: "中文句批注",
+      color: "#facc15",
+      createdAt: "2026-11-27T03:01:00.000Z",
+      location: {
+        type: "pdf",
+        page: 1,
+        translation: {
+          blockId: "left",
+          sourceHash: leftHash,
+          sentenceIndexes: [1],
+          start: 8,
+          end: 14,
+          ranges: [
+            {
+              blockId: "left",
+              sourceHash: leftHash,
+              sentenceIndexes: [1],
+              start: 8,
+              end: 14,
+              quote: "第二句译文。",
+            },
+          ],
+        },
+      },
+    },
+  ];
+
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const result = await translatedPDF(
+    pdfjs.getDocument,
+    { data: await f.doc.save(), useSystemFonts: true },
+    f.blocks,
+    f.translations,
+    await fontBytes,
+    {
+      createCanvas: canvas,
+      layout: "bilingual",
+      annotations,
+    },
+  );
+  expect(result.translated).toBe(3);
+  expect(result.annotationsExported).toBe(2);
+
+  const task = pdfjs.getDocument({
+    data: result.bytes.slice(),
+    useSystemFonts: true,
+  });
+  try {
+    const pdf = await task.promise;
+    const page = await pdf.getPage(1);
+    const content = await page.getTextContent();
+    const extracted = content.items
+      .map((i) => ("str" in i ? i.str : ""))
+      .join("");
+    // Both English source paragraphs, Chinese translations, and bibliography appear in order.
+    const enIdx = extracted.indexOf("Original paragraph on the left.");
+    const zhIdx = extracted.indexOf("左侧第一句译文。");
+    expect(enIdx).toBeGreaterThanOrEqual(0);
+    expect(zhIdx).toBeGreaterThan(enIdx);
+    expect(extracted).toContain("Right column stays here.");
+    expect(extracted).toContain("右侧第二段中文译文。");
+    expect(extracted).toContain("Untranslated English reference entry.");
+
+    const annots = (await page.getAnnotations()).filter(
+      (a) => a.subtype !== "Popup",
+    );
+    expect(annots).toHaveLength(2);
+    const enAnnot = annots.find((a) => a.contentsObj?.str === "英文句高亮")!;
+    const zhAnnot = annots.find((a) => a.contentsObj?.str === "中文句批注")!;
+    // In PDF bottom-up coordinates, the English paragraph above has a larger Y than the Chinese paragraph below!
+    expect(enAnnot.rect[1]).toBeGreaterThan(zhAnnot.rect[1]);
+  } finally {
+    await task.destroy();
+  }
+});
